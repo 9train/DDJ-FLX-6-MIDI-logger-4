@@ -118,6 +118,39 @@
     const setWSStatus = (s) => { if (wsStatusEl) wsStatusEl.textContent = 'WS: ' + s; };
 
     /****************************************************************
+     * === Map bootstrap + syncing (viewer) ===
+     * - Persist in localStorage for fast reloads
+     * - Keep an in-memory copy
+     * - Optionally forward to a global mapper hook if your app exposes it
+     ****************************************************************/
+    function applyMap(map) {
+      if (!map) return;
+      // in-memory cache
+      window.__currentMap = map;
+      // persist for fast reloads
+      try { localStorage.setItem('learned_map', JSON.stringify(map)); } catch {}
+      // If your app exposes a hook to set mappings globally, call it:
+      // e.g., window.applyLearnedMap?.(map);
+      // Or dispatch an app-specific event if your mapper listens to it:
+      // window.dispatchEvent(new CustomEvent('flx:map-import', { detail: map }));
+    }
+
+    // Fallbacks (one-time at startup): localStorage, then static file
+    (async () => {
+      // 1) localStorage
+      try {
+        const ls = localStorage.getItem('learned_map');
+        if (ls) { applyMap(JSON.parse(ls)); return; }
+      } catch {}
+      // 2) static default (served from Express /public)
+      try {
+        const res = await fetch('/learned_map.json', { cache: 'no-store' });
+        if (res.ok) { applyMap(await res.json()); return; }
+      } catch {}
+      // 3) nothing yet: rely on host push (map:sync) or explicit map:get reply
+    })();
+
+    /****************************************************************
      * WebSocket (viewer)
      ****************************************************************/
     const wsClient = connectWS({
@@ -125,8 +158,31 @@
       role,
       onInfo: (info) => window.consumeInfo(info),
       onStatus: (s) => setWSStatus(s),
+      // New: let the client pass through low-level messages (if supported)
+      onMessage: (msg) => {
+        try {
+          if (msg?.type === 'map:sync' && msg.map) applyMap(msg.map);
+        } catch {}
+      },
     });
     window.wsClient = wsClient;
+
+    // Ask server for the room map as soon as the socket opens
+    try {
+      wsClient?.socket?.addEventListener('open', () => {
+        try { wsClient.send?.({ type: 'map:get' }); } catch {}
+      });
+    } catch {}
+
+    // Listen for server pushes (defensive in case connectWS doesn't surface onMessage)
+    try {
+      wsClient?.socket?.addEventListener('message', (e) => {
+        try {
+          const obj = JSON.parse(e.data);
+          if (obj?.type === 'map:sync' && obj.map) applyMap(obj.map);
+        } catch {}
+      });
+    } catch {}
 
     /****************************************************************
      * Recorder: Load/Play/Stop only (viewer)
