@@ -45,7 +45,7 @@
     import { initBoard, consumeInfo as boardConsume, getUnifiedMap } from '/src/board.js';
     import { connectWS }   from '/src/ws.js';
     import * as THEME      from '/src/theme.js';
-    import { initWebMIDI, bootMIDIFromQuery } from '/src/midi.js'; /* SOP: added bootMIDIFromQuery */
+    import { initWebMIDI, bootMIDIFromQuery } from '/src/midi.js'; /* SOP: added bootMIDIFromQuery earlier */
     import { recorder as FLXRec } from '/src/recorder.js';
     import * as RECUI   from '/src/recorder_ui.js';
     import * as DIAG    from '/src/diag.js';
@@ -107,11 +107,73 @@
     });
     window.wsClient = wsClient;
 
-    // Forward every local event to server
-    const origConsume = window.consumeInfo;
+    /****************************************************************
+     * SOP MERGE: MIDI shape normalizer + single forwarding wrapper
+     * - Normalizes any {type:'midi_like'|'midi'|'info', payload:{...}}
+     * - Harmonizes CC and Note events to d1/d2 + controller/value
+     * - Sends normalized object over WS, then forwards to original consumer
+     ****************************************************************/
+    function normalizeInfo(x) {
+      if (!x || typeof x !== 'object') return x;
+
+      // Unwrap wrapper types
+      if (x.type && typeof x.payload === 'object') {
+        const t = String(x.type).toLowerCase();
+        if (t === 'midi_like' || t === 'midi' || t === 'info') {
+          x = x.payload;
+        }
+      }
+
+      const info = { ...x };
+      const t = String(info.type || '').toLowerCase();
+
+      // CC: accept controller/value or d1/d2, mirror both
+      if (t === 'cc') {
+        const d1 = info.d1 ?? info.controller ?? 0;
+        const d2 = info.d2 ?? info.value ?? 0;
+        info.controller = d1;
+        info.value = d2;
+        info.d1 = d1;
+        info.d2 = d2;
+        info.type = 'cc';
+        return info;
+      }
+
+      // Notes: ensure d1/d2 exist
+      if (t === 'noteon' || t === 'noteoff') {
+        info.d1 = info.d1 ?? info.code ?? 0;
+        info.d2 = info.d2 ?? info.value ?? 0;
+        return info;
+      }
+
+      // Generic 'midi' envelope with mtype
+      if (t === 'midi') {
+        const mt = String(info.mtype || '').toLowerCase();
+        if (mt === 'cc') {
+          info.type = 'cc';
+          const d1 = info.d1 ?? info.controller ?? info.code ?? 0;
+          const d2 = info.d2 ?? info.value ?? 0;
+          info.controller = d1; info.value = d2; info.d1 = d1; info.d2 = d2;
+          return info;
+        }
+        if (mt === 'noteon' || mt === 'noteoff') {
+          info.type = mt;
+          info.d1 = info.d1 ?? info.code ?? 0;
+          info.d2 = info.d2 ?? info.value ?? 0;
+          return info;
+        }
+      }
+
+      // Unknown types fall through unchanged
+      return info;
+    }
+
+    // Replace the original forwarder with a normalized forwarder
+    const origConsume = window.consumeInfo; // keep original rendering consumer
     window.consumeInfo = (info) => {
-      if (wsClient?.isAlive?.()) wsClient.send(info); // sends raw {type:'cc'|'noteon'|...}
-      return origConsume(info);
+      const n = normalizeInfo(info);
+      if (wsClient?.isAlive?.()) wsClient.send(n);
+      return origConsume(n);
     };
 
     /****************************************************************
@@ -133,10 +195,7 @@
     window.addEventListener('flx:map-updated', pushMap);
 
     /****************************************************************
-     * WebMIDI capture (host only) — SOP helper (ESM usage)
-     * Uses URL params:
-     *   ?midi=<name>   — preferred device (defaults to "DDJ-FLX6")
-     *   ?logmidi       — enable verbose MIDI logs
+     * WebMIDI capture (host only)
      ****************************************************************/
     try {
       console.log('[MIDI] starting init via bootMIDIFromQuery');
@@ -144,58 +203,11 @@
         onInfo: function(info){ try { window.consumeInfo && window.consumeInfo(info); } catch {} },
         onStatus: function(s){ try { setMIDIStatus && setMIDIStatus(s); } catch {} }
       });
-      // You still have access to handle.access / handle.input if needed
       console.log('[MIDI] init OK');
     } catch (e) {
       console.warn('[MIDI] init failed', e);
       setMIDIStatus('host: off');
     }
-
-    /* ----------------------------------------------------------------
-     * PREVIOUS manual MIDI init kept for reference (DISABLED to avoid
-     * double init). Uncomment to revert.
-     * ----------------------------------------------------------------
-    // // Resolve a real device name before initWebMIDI (case-insensitive, substring ok)
-    // async function resolvePreferredMidiName() {
-    //   try {
-    //     const qs = new URLSearchParams(location.search);
-    //     const want = (qs.get('midi') || 'DDJ-FLX6').toLowerCase();
-    //     if (!('requestMIDIAccess' in navigator)) {
-    //       setMIDIStatus('unsupported');
-    //       return want; // still return something
-    //     }
-    //     const access = await navigator.requestMIDIAccess();
-    //     const inputs = [...access.inputs.values()];
-    //     if (!inputs.length) {
-    //       setMIDIStatus('no devices');
-    //       return want;
-    //     }
-    //     let pick = inputs.find(i => i.name.toLowerCase() === want);
-    //     if (!pick) pick = inputs.find(i => i.name.toLowerCase().includes(want));
-    //     if (!pick) pick = inputs[0];
-    //     console.log('[MIDI] picked input:', pick.name);
-    //     setMIDIStatus('choosing ' + pick.name);
-    //     return pick.name;
-    //   } catch (e) {
-    //     console.warn('[MIDI] resolve failed', e);
-    //     return (new URLSearchParams(location.search)).get('midi') || 'DDJ-FLX6';
-    //   }
-    // }
-    // try {
-    //   const preferredName = await resolvePreferredMidiName();
-    //   console.log('[MIDI] starting init');
-    //   await initWebMIDI({
-    //     onInfo: (info) => window.consumeInfo(info),
-    //     preferredInput: preferredName,
-    //     onStatus: (s) => setMIDIStatus(s),
-    //     log: (new URLSearchParams(location.search)).has('logmidi')
-    //   });
-    //   console.log('[MIDI] init OK');
-    // } catch (e) {
-    //   console.warn('[MIDI] init failed', e);
-    //   setMIDIStatus('host: off');
-    // }
-    */
 
     /****************************************************************
      * Recorder (full)
@@ -239,7 +251,8 @@
     });
 
     /****************************************************************
-     * Jog Physics (“Tape Mode”) — preserved
+     * Jog Physics (“Tape Mode”)
+     * (unchanged; will see normalized events because of wrapper above)
      ****************************************************************/
     const Jog = (() => {
       const CFG = { mode:'off', sensitivity:2.5, damping:0.92 };
@@ -248,102 +261,49 @@
         R:{ angle:0, vel:0, lastVal:null, lastKey:null, el:null },
         anim:null
       };
-
-      function toIdVariants(id){
-        const v=String(id||''); const a=new Set([v]);
-        if (v.includes('_x5F_')) a.add(v.replace(/_x5F_/g,'_'));
-        if (v.includes('_'))     a.add(v.replace(/_/g,'_x5F_'));
-        return [...a];
-      }
-      function getEl(id){
-        for (const vid of toIdVariants(id)) {
-          const el = document.getElementById(vid);
-          if (el) return el;
-        }
-        return null;
-      }
+      function toIdVariants(id){ const v=String(id||''); const a=new Set([v]); if (v.includes('_x5F_')) a.add(v.replace(/_x5F_/g,'_')); if (v.includes('_')) a.add(v.replace(/_/g,'_x5F_')); return [...a]; }
+      function getEl(id){ for (const vid of toIdVariants(id)) { const el = document.getElementById(vid); if (el) return el; } return null; }
       function resolveJogEls(){ S.L.el=getEl('jog_L'); S.R.el=getEl('jog_R'); }
       resolveJogEls();
-
-      function applyRotation(el, ang){
-        if (!el) return;
-        try {
-          el.style.transformBox = 'fill-box';
-          el.style.transformOrigin = 'center';
-          el.style.transform = `rotate(${ang}deg)`;
-        } catch {}
-        try {
-          const bb=el.getBBox(); const cx=bb.x+bb.width/2, cy=bb.y+bb.height/2;
-          el.setAttribute('transform', `rotate(${ang} ${cx} ${cy})`);
-        } catch {}
-      }
-
-      function tick(){
-        S.anim = requestAnimationFrame(tick);
-        if (CFG.mode !== 'tape') return;
-        ['L','R'].forEach(side=>{
-          const j=S[side]; if (!j.el) return;
-          j.angle += j.vel;
-          j.vel   *= CFG.damping;
-          if (Math.abs(j.vel) < 0.001) j.vel = 0;
-          applyRotation(j.el, j.angle);
-        });
-      }
-
-      if (!window.__JOG_WRAP__) {
-        window.__JOG_WRAP__ = true;
-        const orig = window.consumeInfo;
-        window.consumeInfo = (info) => { try { onEvent(info); } catch {} return orig(info); };
-      }
-
+      function applyRotation(el, ang){ if (!el) return; try { el.style.transformBox='fill-box'; el.style.transformOrigin='center'; el.style.transform=`rotate(${ang}deg)`; } catch {} try { const bb=el.getBBox(); const cx=bb.x+bb.width/2, cy=bb.y+bb.height/2; el.setAttribute('transform',`rotate(${ang} ${cx} ${cy})`); } catch {} }
+      function tick(){ S.anim=requestAnimationFrame(tick); if (CFG.mode!=='tape') return; ['L','R'].forEach(side=>{ const j=S[side]; if (!j.el) return; j.angle+=j.vel; j.vel*=CFG.damping; if (Math.abs(j.vel)<0.001) j.vel=0; applyRotation(j.el,j.angle); }); }
+      if (!window.__JOG_WRAP__) { window.__JOG_WRAP__=true; const orig=window.consumeInfo; window.consumeInfo=(info)=>{ try { onEvent(info); } catch {} return orig(info); }; }
       function onEvent(info){
-        if (CFG.mode === 'off') return;
-
-        const mm = getUnifiedMap?.() || [];
-        const type = (info.type||'').toLowerCase();
-        const code = type === 'cc' ? (info.controller ?? info.d1) : info.d1;
-        const key  = `${type}:${info.ch}:${code}`;
-
-        const hits = mm.filter(m =>
-          (m.key && m.key === key && m.target) ||
-          (!m.key && m.type === type && m.ch === info.ch && m.code === (info.controller ?? info.d1) && m.target)
-        );
-
-        let side = null;
-        if (hits.some(h => (h.target||'').toLowerCase().includes('jog_l'))) side = 'L';
-        if (hits.some(h => (h.target||'').toLowerCase().includes('jog_r'))) side = side || 'R';
+        if (CFG.mode==='off') return;
+        const mm=getUnifiedMap?.()||[];
+        const type=(info.type||'').toLowerCase();
+        const code=type==='cc'?(info.controller??info.d1):info.d1;
+        const key=`${type}:${info.ch}:${code}`;
+        const hits=mm.filter(m=>(m.key&&m.key===key&&m.target)||(!m.key&&m.type===type&&m.ch===info.ch&&m.code===(info.controller??info.d1)&&m.target));
+        let side=null;
+        if (hits.some(h=>(h.target||'').toLowerCase().includes('jog_l'))) side='L';
+        if (hits.some(h=>(h.target||'').toLowerCase().includes('jog_r'))) side=side||'R';
         if (!side) return;
+        const j=S[side]; if (!j.el) resolveJogEls();
 
-        const j = S[side]; if (!j.el) resolveJogEls();
-
-        if (CFG.mode === 'absolute') {
-          const angle = (info.value ?? info.d2 ?? 0) * (360/127);
-          j.angle = angle; applyRotation(j.el, j.angle); return;
+        if (CFG.mode==='absolute'){
+          const angle=(info.value??info.d2??0)*(360/127);
+          j.angle=angle; applyRotation(j.el,j.angle); return;
         }
 
-        if (CFG.mode === 'tape') {
-          const v = (info.value ?? info.d2 ?? 0) | 0;
-          if (j.lastKey !== key) j.lastVal = null;
+        if (CFG.mode==='tape'){
+          const v=(info.value??info.d2??0)|0;
+          if (j.lastKey!==key) j.lastVal=null;
           let d;
-          if (j.lastVal == null) d = 0;
-          else {
-            d = v - j.lastVal;
-            if (d > 64) d -= 128;
-            if (d < -64) d += 128;
-          }
-          j.lastVal = v; j.lastKey = key;
-          j.vel += d * 2.5;
+          if (j.lastVal==null) d=0;
+          else { d=v-j.lastVal; if (d>64) d-=128; if (d<-64) d+=128; }
+          j.lastVal=v; j.lastKey=key;
+          j.vel+=d*2.5;
           if (!S.anim) tick();
         }
       }
-
       return { };
     })();
 
     /****************************************************************
      * Toolbar + Hotkeys
      ****************************************************************/
-    const stageEl = document.getElementById('boardHost');
+    // Reuse the same stageEl (do NOT redeclare)
     document.getElementById('fit')     ?.addEventListener('click',  () => stageEl.classList.remove('fill'));
     document.getElementById('fill')    ?.addEventListener('click',  () => stageEl.classList.add('fill'));
     document.getElementById('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
