@@ -5,6 +5,19 @@
   <title>FLX6 Visualizer</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="stylesheet" href="./styles.css" />
+
+  <!-- SOP ADDITION: viewer-only UI trim (do NOT affect host) -->
+  <style>
+    /* Hide recorder controls when viewing (host keeps everything) */
+    body.viewer #recStart,
+    body.viewer #recStop,
+    body.viewer #recPlay,
+    body.viewer #recSave,
+    body.viewer #recLoad,
+    body.viewer #ui .right label {
+      display: none !important;
+    }
+  </style>
 </head>
 <body>
   <!-- Top toolbar (you can hide this in OBS if you prefer) -->
@@ -102,7 +115,7 @@
     let roleResolved = null;
     let urlResolved  = null;
 
-    // Try roles.js pattern (your addition)
+    // Try roles.js pattern (optional)
     try {
       const mod = await import('/src/roles.js');
       if (mod?.getRole && mod?.getWSURL) {
@@ -122,6 +135,12 @@
 
     // Expose role globally (SOP ADDITION 3)
     window.FLX_ROLE = role;
+
+    // SOP ADDITION 4: Apply role on <body> for CSS targeting (viewer vs host)
+    try {
+      document.body.classList.add(role);
+      document.body.dataset.role = role;
+    } catch {}
 
     /****************************************************************
      * 5.1) Connect WS + forward host events to viewers (original)
@@ -145,7 +164,7 @@
       };
     }
 
-    // NEW (SOP addition previously added): When host connects, push the current learned map to all viewers
+    // NEW (already present): When host connects, push the current learned map to all viewers
     if (role === 'host') {
       const pushMap = () => {
         try {
@@ -401,7 +420,7 @@
           ['Theme',       () => THEME.toggle()],
           ['Jog Panel',   () => Jog.toggle()],
           ['Fit',         () => stage.classList.remove('fill')],
-          ['Fill',        () => stage.classList.add('fill')],
+          ['Fill',        => stage.classList.add('fill')],
           ['Toggle BG',   () => document.body.classList.toggle('transparent')],
         ];
         const names = choices.map(([n]) => '• ' + n).join('\n');
