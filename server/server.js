@@ -1,5 +1,7 @@
 // server/server.js
 // Static web server + WebSocket + optional MIDI→WS bridge (ESM version)
+// SOP merge: integrates raw WS relay features (role/room, viewer-only broadcast,
+// heartbeat, hello/join/ping) without removing original functionality.
 
 import path from 'path';
 import express from 'express';
@@ -32,6 +34,22 @@ const WSPORT = Number(
   WSPORT_ENV ?? (SINGLE_PORT ? PORT : 8787)
 );
 
+// ---- Optional Origin allow-list (SOP: non-breaking by default)
+// - Original code allowed a single ALLOWED_ORIGIN in production.
+// - We keep that behavior and also support ALLOWED_ORIGINS (comma-separated).
+// - If neither is set, we DO NOT block (keeps local/dev working).
+const SINGLE_ALLOWED = process.env.ALLOWED_ORIGIN?.trim();
+const MULTI_ALLOWED  = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+const HAS_ALLOWLIST = !!SINGLE_ALLOWED || MULTI_ALLOWED.length > 0;
+const ALLOWED_ORIGINS = new Set([
+  ...(SINGLE_ALLOWED ? [SINGLE_ALLOWED] : []),
+  ...MULTI_ALLOWED,
+]);
+
 // ---- Static web server
 const app = express();
 
@@ -46,15 +64,17 @@ app.use('/assets', express.static(path.join(__dirname, '..', 'public', 'assets')
 app.use('/assets', express.static(path.join(__dirname, '..', 'src', 'assets')));
 app.use('/assets', express.static(path.join(__dirname, '..', 'assets')));
 
-// Health endpoint (useful for Fly/Render health checks)
+// Health endpoints (keep original and add /health for infra that expects it)
 app.get('/healthz', (_req, res) => res.status(200).send('ok'));
+app.get('/health',  (_req, res) => res.status(200).send('ok'));
+app.get('/',        (_req, res) => res.status(200).send('ok'));
 
 // Optional: silence favicon errors
 app.get('/favicon.ico', (_req, res) => res.sendStatus(204));
 
 const server = http.createServer(app);
 
-// --- SOP CHANGE: listen using process.env.PORT and bind to 0.0.0.0
+// --- SOP: listen using process.env.PORT and bind to 0.0.0.0
 server.listen(PORT, HOST, () => {
   console.log(`[HTTP] Listening on http://${HOST}:${PORT}  (SINGLE_PORT=${SINGLE_PORT ? 'on' : 'off'})`);
 });
@@ -75,6 +95,8 @@ if (SINGLE_PORT) {
   });
 }
 
+// --- Broadcast helpers
+// Original broadcast (used by HID/MIDI bridge) — sends to ALL clients.
 function broadcast(obj) {
   const msg = JSON.stringify(obj);
   for (const client of wss.clients) {
@@ -82,30 +104,106 @@ function broadcast(obj) {
   }
 }
 
+// NEW: viewer-scoped broadcast (for host → viewers in the same room)
+function broadcastToViewers(room, payload, exceptWs) {
+  const msg = JSON.stringify({ type: 'info', payload, room });
+  for (const client of wss.clients) {
+    if (
+      client !== exceptWs &&
+      client.readyState === WebSocket.OPEN &&
+      client.room === room &&
+      client.role === 'viewer'
+    ) {
+      try { client.send(msg); } catch {}
+    }
+  }
+}
+
+// --- WS connection handling
 wss.on('connection', (ws, req) => {
-  // Optional lightweight origin check (enable via env to tighten prod)
-  const allowed = process.env.ALLOWED_ORIGIN;
-  if (process.env.NODE_ENV === 'production' && allowed) {
+  // SOP: Keep original permissive behavior unless allow-list is configured.
+  if (HAS_ALLOWLIST) {
+    const origin = req?.headers?.origin || '';
+    if (!ALLOWED_ORIGINS.has(origin)) {
+      try { ws.close(1008, 'origin not allowed'); } catch {}
+      return;
+    }
+  } else if (process.env.NODE_ENV === 'production' && process.env.ALLOWED_ORIGIN) {
+    // Preserve original single-origin prod tightening (legacy path)
     const origin = req?.headers?.origin;
-    if (origin !== allowed) {
+    if (origin !== process.env.ALLOWED_ORIGIN) {
       try { ws.close(); } catch {}
       return;
     }
   }
 
+  // --- Parse role/room from URL query (?role=host&room=default)
+  try {
+    // In Node HTTP upgrade, req.url is a path + query; base is required for URL()
+    const parsed = new URL(req.url, 'http://localhost');
+    ws.role = (parsed.searchParams.get('role') || 'viewer').toLowerCase();
+    ws.room = parsed.searchParams.get('room') || 'default';
+  } catch {
+    ws.role = 'viewer';
+    ws.room = 'default';
+  }
+
+  // --- Heartbeat: mark alive and refresh on pong
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+
+  // --- First hello back (useful for logs / client handshake)
   try { ws.send(JSON.stringify({ type: 'hello', ts: Date.now() })); } catch {}
+
+  // --- Handle messages from clients
+  ws.on('message', (buf) => {
+    let msg = null;
+    try { msg = JSON.parse(buf.toString()); } catch {}
+    if (!msg) return;
+
+    // Lightweight handshake support
+    if (msg.type === 'hello' && msg.role) { ws.role = String(msg.role).toLowerCase(); return; }
+    if (msg.type === 'join'  && msg.room) { ws.room = String(msg.room) || 'default'; return; }
+
+    // App-level ping (clients may send). Protocol ping/pong is preferred.
+    if (msg.type === 'ping') { return; }
+
+    // Forward host events to all viewers in the same room (scoped relay).
+    if (ws.role === 'host') {
+      // Relay the *original* message as payload (as in your raw relay design).
+      broadcastToViewers(ws.room, msg, ws);
+    }
+  });
+
+  ws.on('close', (_code, _reason) => {
+    // no-op; keep logs quiet
+  });
 });
 
-// ---- Optional HID bridge
+// --- Server-side heartbeat: send protocol pings every 30s
+const HEARTBEAT_MS = 30000;
+const hbInterval = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) { ws.terminate(); continue; }
+    ws.isAlive = false;
+    try { ws.ping(); } catch {}
+  }
+}, HEARTBEAT_MS);
+
+// Clean up interval on shutdown
+process.on('SIGTERM', () => { clearInterval(hbInterval); server.close(()=>process.exit(0)); });
+process.on('SIGINT',  () => { clearInterval(hbInterval); server.close(()=>process.exit(0)); });
+
+// ---- Optional HID bridge (unchanged)
 const HID_ENABLED = process.env.HID_ENABLED === '1';
 if (HID_ENABLED) {
   const hid = createHID({ enabled: true });
-  hid.on('info',  (info) => broadcast(info));                        // <- push to all clients
+  hid.on('info',  (info) => broadcast(info));                        // <- push to all clients (original behavior)
   hid.on('log',   (m)    => console.log('[HID]', m));
   hid.on('error', (e)    => console.warn('[HID] error:', e?.message || e));
 }
 
-// ---- Optional: MIDI → WS bridge (Node side)
+// ---- Optional: MIDI → WS bridge (Node side) (unchanged)
 let midiInput = null;
 
 // Try to load easymidi dynamically so the app still runs if it's not installed.
@@ -134,7 +232,7 @@ try {
             : (type === 'noteon' || type === 'noteoff')
               ? { type, ch, d1: d.note, d2: d.velocity, value: d.velocity }
               : { type, ch, ...d };
-        broadcast(info);
+        broadcast(info); // SOP: keep original "send to all clients" for MIDI/HID stream
       };
 
       midiInput.on('noteon',  d => send('noteon', d));
