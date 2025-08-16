@@ -155,7 +155,7 @@
     /****************************************************************
      * Launcher (menus + panels)
      ****************************************************************/
-    const stage = document.getElementById('boardHost');
+    const stage = document.getElementById('boardHost');  /* <-- single declaration */
     initLauncher({
       actions: {
         // Panels
@@ -283,7 +283,7 @@
     /****************************************************************
      * Toolbar + Hotkeys
      ****************************************************************/
-    const stage = document.getElementById('boardHost');
+    /* reuse the same `stage` declared above */
     document.getElementById('fit')     ?.addEventListener('click',  () => stage.classList.remove('fill'));
     document.getElementById('fill')    ?.addEventListener('click',  () => stage.classList.add('fill'));
     document.getElementById('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
