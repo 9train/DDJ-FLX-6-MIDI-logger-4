@@ -115,10 +115,7 @@
     };
 
     /****************************************************************
-     * ADD (SOP): auto-push learned map to the room
-     * - Uses your requested snippet verbatim, adapted to this file.
-     * - Prefer wsClient.sendMap; fallback sends {type:'map:set', map, ts}.
-     * - Push after boot + whenever Wizard/Mapper fires 'flx:map-updated'.
+     * Auto-push learned map to the room (SOP)
      ****************************************************************/
     function pushMap() {
       try {
@@ -132,24 +129,8 @@
         console.warn('[host] pushMap failed', e);
       }
     }
-    // Push shortly after boot, so late-joining viewers get it
     setTimeout(pushMap, 250);
-    // Push whenever Wizard/Mapper updates the map
     window.addEventListener('flx:map-updated', pushMap);
-
-    /****************************************************************
-     * WebMIDI capture (host only)
-     ****************************************************************/
-    try {
-      const qs = new URLSearchParams(location.search);
-      const preferred = qs.get('midi') || 'DDJ-FLX6';
-      await initWebMIDI({
-        onInfo: (info) => window.consumeInfo(info),
-        preferredInput: preferred,
-        onStatus: (s) => setMIDIStatus(s),
-        log: qs.has('logmidi')
-      });
-    } catch { setMIDIStatus('host: off'); }
 
     /****************************************************************
      * Recorder (full)
@@ -169,7 +150,7 @@
     /****************************************************************
      * Launcher (menus + panels)
      ****************************************************************/
-    const stageEl = document.getElementById('boardHost');  /* <-- renamed to avoid any collision */
+    const stageEl = document.getElementById('boardHost');  /* single declaration */
     initLauncher({
       actions: {
         // Panels
@@ -297,7 +278,6 @@
     /****************************************************************
      * Toolbar + Hotkeys
      ****************************************************************/
-    const stageEl = document.getElementById('boardHost');
     document.getElementById('fit')     ?.addEventListener('click',  () => stageEl.classList.remove('fill'));
     document.getElementById('fill')    ?.addEventListener('click',  () => stageEl.classList.add('fill'));
     document.getElementById('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
