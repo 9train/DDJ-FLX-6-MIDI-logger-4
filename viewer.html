@@ -5,6 +5,40 @@
   <title>FLX6 Visualizer — Viewer</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="stylesheet" href="./styles.css" />
+
+  <!-- Viewer hard hide (CSS only, no module edits) -->
+  <style>
+    /* Recorder: hide host-only buttons in viewer */
+    body.viewer #recStart,
+    body.viewer #recSave { display: none !important; }
+
+    /* Hide any host panels/menus/timelines if launcher renders them */
+    body.viewer .panel,
+    body.viewer [data-panel],
+    body.viewer .wizard,
+    body.viewer .diagnostics,
+    body.viewer .timeline,
+    body.viewer .edit-toolbar { display: none !important; }
+
+    /* Common launchers: try to hide by structural hooks as well */
+    body.viewer #launcher,
+    body.viewer .launcher { /* keep the whole launcher hidden by default */
+      display: none !important;
+    }
+
+    /* If your launcher must stay for Fit/Fill/Toggle BG, uncomment this
+       and rely on the JS scrub below instead:
+    body.viewer #launcher, body.viewer .launcher { display: block !important; }
+    body.viewer #launcher .section-panels,
+    body.viewer .launcher .section-panels,
+    body.viewer #launcher .section-presets,
+    body.viewer .launcher .section--presets { display: none !important; }
+    body.viewer #launcher [data-action="toggleDiag"],
+    body.viewer #launcher [data-action="toggleTimeline"],
+    body.viewer #launcher [data-action="toggleWizard"],
+    body.viewer #launcher [data-action="toggleEdit"] { display: none !important; }
+    */
+  </style>
 </head>
 <body class="viewer">
   <!-- Minimal toolbar for viewer -->
@@ -122,11 +156,11 @@
     $('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
 
     /****************************************************************
-     * Minimal launcher (viewer)
+     * Minimal launcher (viewer) + post-init scrub
      ****************************************************************/
     try {
       const { initLauncher } = await import('/src/launcher.js');
-      initLauncher({
+      const launcher = initLauncher({
         actions: {
           toggleTheme: () => THEME.toggle(),
           fit:         () => stage.classList.remove('fill'),
@@ -134,6 +168,23 @@
           toggleBG:    () => document.body.classList.toggle('transparent'),
         },
         mountPresetUI: () => {},
+      });
+
+      // Hard scrub any host leftovers if launcher still injected them
+      const kill = (sel) => document.querySelectorAll(sel).forEach(el => el.remove());
+      // common structural hooks
+      kill('#launcher .section-panels, .launcher .section-panels');
+      kill('#launcher .section--presets, .launcher .section--presets, #launcher .section-presets, .launcher .section-presets');
+      // buttons by data-action (if present)
+      kill('[data-action="toggleDiag"], [data-action="toggleTimeline"], [data-action="toggleWizard"], [data-action="toggleEdit"]');
+      // any buttons that literally say Rec or Save (fallback)
+      Array.from(document.querySelectorAll('#launcher button, .launcher button')).forEach(btn=>{
+        const t = (btn.textContent || '').trim().toLowerCase();
+        if (t === 'rec' || t === 'save') btn.remove();
+      });
+      // if a leftover header "Presets" exists, remove it
+      Array.from(document.querySelectorAll('#launcher h2, .launcher h2')).forEach(h=>{
+        if ((h.textContent||'').trim().toLowerCase()==='presets') h.remove();
       });
     } catch {}
 
