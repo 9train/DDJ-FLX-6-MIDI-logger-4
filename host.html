@@ -5,6 +5,8 @@
   <title>FLX6 Visualizer — Host</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="stylesheet" href="./styles.css" />
+  <!-- Optional: silence missing favicon 404 -->
+  <link rel="icon" href="data:,">
 </head>
 <body class="host">
   <!-- Full host toolbar -->
@@ -87,8 +89,8 @@
     window.consumeInfo = baseConsume;
 
     /****************************************************************
-     * Status helpers
-     ****************************************************************/
+    * Status helpers
+    ****************************************************************/
     const wsStatusEl   = document.getElementById('wsStatus');
     const midiStatusEl = document.getElementById('midiStatus');
     const setWSStatus   = (s) => { if (wsStatusEl)   wsStatusEl.textContent   = 'WS: '   + s; };
@@ -155,7 +157,7 @@
     /****************************************************************
      * Launcher (menus + panels)
      ****************************************************************/
-    const stage = document.getElementById('boardHost');  /* <-- single declaration */
+    const stageEl = document.getElementById('boardHost');  /* <-- renamed to avoid any collision */
     initLauncher({
       actions: {
         // Panels
@@ -165,8 +167,8 @@
         toggleEdit:     () => EDIT.toggle(),
         // Theme + view
         toggleTheme: () => THEME.toggle(),
-        fit:        () => stage.classList.remove('fill'),
-        fill:       () => stage.classList.add('fill'),
+        fit:        () => stageEl.classList.remove('fill'),
+        fill:       () => stageEl.classList.add('fill'),
         toggleBG:   () => document.body.classList.toggle('transparent'),
         // Recorder
         recStart:  () => { FLXRec.start(); setTimeout(()=>RECUI.refresh(), 50); },
@@ -283,9 +285,8 @@
     /****************************************************************
      * Toolbar + Hotkeys
      ****************************************************************/
-    /* reuse the same `stage` declared above */
-    document.getElementById('fit')     ?.addEventListener('click',  () => stage.classList.remove('fill'));
-    document.getElementById('fill')    ?.addEventListener('click',  () => stage.classList.add('fill'));
+    document.getElementById('fit')     ?.addEventListener('click',  () => stageEl.classList.remove('fill'));
+    document.getElementById('fill')    ?.addEventListener('click',  () => stageEl.classList.add('fill'));
     document.getElementById('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
 
     document.addEventListener('keydown', (e)=>{
