@@ -255,3 +255,25 @@ button:active { transform: translateY(1px); }
 /* ===== Utilities ===== */
 .muted { opacity: 0.5; }
 .hidden { display: none !important; }
+
+/* === Viewer cleanup (append to end) === */
+body.viewer #recStart,
+body.viewer #recStop,
+body.viewer #recPlay,
+body.viewer #recSave,
+body.viewer #recLoad,
+body.viewer #fallbackMenu,
+body.viewer .panel,
+body.viewer [data-panel],
+body.viewer .edit-toolbar,
+body.viewer .wizard,
+body.viewer .diagnostics,
+body.viewer .timeline {
+  display: none !important;
+}
+
+/* Tidy spacing on the right cluster once items hide */
+body.viewer #ui .right { gap: 8px; }
+
+/* Full-viewport stage; Fill toggles via .fill class */
+#boardHost { width: 100vw; height: 100vh; }
