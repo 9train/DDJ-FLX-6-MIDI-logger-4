@@ -37,7 +37,9 @@
   </script>
 
   <script type="module">
-    /*************** Host imports ***************/
+    /****************************************************************
+     * Core imports (host)
+     ****************************************************************/
     import { initBoard, consumeInfo as boardConsume, getUnifiedMap } from '/src/board.js';
     import { connectWS }   from '/src/ws.js';
     import * as THEME      from '/src/theme.js';
@@ -51,17 +53,17 @@
     import { initLauncher } from '/src/launcher.js';
     import { loadMappings } from '/src/mapper.js';
 
-    // ----- Role + WS URL resolution (mirrors original index) -----
+    /****************************************************************
+     * Force host role + WS URL resolution
+     ****************************************************************/
     let role = 'host';
     let wsURL = window.WS_URL;
 
     try {
       const mod = await import('/src/roles.js');
-      if (mod?.getRole) role = 'host'; // force host page
       if (mod?.getWSURL) wsURL = mod.getWSURL();
     } catch {
       const qs = new URLSearchParams(location.search);
-      role = 'host';
       if (!wsURL) {
         const host = location.hostname || 'localhost';
         wsURL = qs.get('ws') || `ws://${host}:` + (qs.get('wsport') || '8787');
@@ -72,21 +74,29 @@
     document.body.dataset.role = role;
     window.FLX_ROLE = role;
 
-    // ----- Init: board + Theme -----
+    /****************************************************************
+     * Init: board + Theme (Shift+T toggles Theme)
+     ****************************************************************/
     await initBoard({ hostId: 'boardHost' });
     THEME.attachThemeDesigner({ svgRoot: document.querySelector('#boardHost svg') });
 
-    // ----- Unified consumer (render into board) -----
+    /****************************************************************
+     * Unified consumer (render into board)
+     ****************************************************************/
     const baseConsume = (info) => boardConsume(info);
     window.consumeInfo = baseConsume;
 
-    // ----- Status helpers -----
+    /****************************************************************
+     * Status helpers
+     ****************************************************************/
     const wsStatusEl   = document.getElementById('wsStatus');
     const midiStatusEl = document.getElementById('midiStatus');
     const setWSStatus   = (s) => { if (wsStatusEl)   wsStatusEl.textContent   = 'WS: '   + s; };
     const setMIDIStatus = (s) => { if (midiStatusEl) midiStatusEl.textContent = 'MIDI: ' + s; };
 
-    // ----- WebSocket (host) -----
+    /****************************************************************
+     * WebSocket (host)
+     ****************************************************************/
     const wsClient = connectWS({
       url: wsURL,
       role,
@@ -95,14 +105,14 @@
     });
     window.wsClient = wsClient;
 
-    // Host forwards every MIDI info to WS
+    // Forward every local event to server
     const origConsume = window.consumeInfo;
     window.consumeInfo = (info) => {
       if (wsClient?.isAlive?.()) wsClient.send(info);
       return origConsume(info);
     };
 
-    // Map sync to viewers
+    // Push learned map to viewers
     const pushMap = () => {
       try {
         const mapArray = loadMappings() || [];
@@ -113,7 +123,9 @@
     setTimeout(pushMap, 250);
     window.addEventListener('flx:map-updated', pushMap);
 
-    // WebMIDI capture (host only)
+    /****************************************************************
+     * WebMIDI capture (host only)
+     ****************************************************************/
     try {
       const qs = new URLSearchParams(location.search);
       const preferred = qs.get('midi') || 'DDJ-FLX6';
@@ -125,7 +137,9 @@
       });
     } catch { setMIDIStatus('host: off'); }
 
-    // Recorder (full)
+    /****************************************************************
+     * Recorder (full)
+     ****************************************************************/
     const $ = (id) => document.getElementById(id);
     $('recStart')?.addEventListener('click', () => { FLXRec.start(); setTimeout(()=>RECUI.refresh(), 50); });
     $('recStop') ?.addEventListener('click', () => { FLXRec.stop();  RECUI.refresh(); });
@@ -138,7 +152,9 @@
       RECUI.refresh();
     });
 
-    // Launcher (host panels + Theme + view + recorder actions)
+    /****************************************************************
+     * Launcher (menus + panels)
+     ****************************************************************/
     const stage = document.getElementById('boardHost');
     initLauncher({
       actions: {
@@ -162,7 +178,9 @@
       mountPresetUI: (el) => PRESETS.attachPresetUI(el),
     });
 
-    // ----- Jog Physics (“Tape Mode”) — preserved for host too -----
+    /****************************************************************
+     * Jog Physics (“Tape Mode”) — preserved
+     ****************************************************************/
     const Jog = (() => {
       const CFG = { mode:'off', sensitivity:2.5, damping:0.92 };
       const S   = {
@@ -262,15 +280,16 @@
       return { };
     })();
 
-    // ----- Toolbar -----
+    /****************************************************************
+     * Toolbar + Hotkeys
+     ****************************************************************/
     const stage = document.getElementById('boardHost');
     document.getElementById('fit')     ?.addEventListener('click',  () => stage.classList.remove('fill'));
     document.getElementById('fill')    ?.addEventListener('click',  () => stage.classList.add('fill'));
     document.getElementById('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
 
-    // ----- Hotkeys -----
     document.addEventListener('keydown', (e)=>{
-      if (e.shiftKey && e.key.toLowerCase()==='t') THEME.toggle(); // Theme
+      if (e.shiftKey && e.key.toLowerCase()==='t') THEME.toggle();
     });
   </script>
 </body>
