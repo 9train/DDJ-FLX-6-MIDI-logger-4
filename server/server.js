@@ -14,9 +14,23 @@ const __dirname  = path.dirname(__filename);
 
 // ---- Config (env with sensible defaults)
 const PORT        = Number(process.env.PORT || 8080);
-const WSPORT      = Number(process.env.WSPORT || 8787);
-const MIDI_INPUT  = process.env.MIDI_INPUT  || '';  // e.g., "DDJ-FLX6" or "IAC Driver HID Bridge"
-const MIDI_OUTPUT = process.env.MIDI_OUTPUT || '';  // optional (unused here, but kept for future)
+const HOST        = process.env.HOST || '0.0.0.0'; // SOP: ensure bind to all interfaces
+const WSPORT_ENV  = process.env.WSPORT;            // keep original env if user explicitly sets it
+const MIDI_INPUT  = process.env.MIDI_INPUT  || ''; // e.g., "DDJ-FLX6" or "IAC Driver HID Bridge"
+const MIDI_OUTPUT = process.env.MIDI_OUTPUT || ''; // optional (unused here, but kept for future)
+
+// Fly-friendly single port mode: attach WS to the HTTP server (no extra listener).
+// We DO NOT force this. It only activates if user opts-in or when running on Fly.
+// This preserves original multi-port behavior by default.
+const SINGLE_PORT =
+  process.env.SINGLE_PORT === '1' ||
+  process.env.FLY_IO === '1' ||
+  !!process.env.FLY_MACHINE_ID;
+
+// If SINGLE_PORT, default WS to the same port as HTTP unless explicitly overridden.
+const WSPORT = Number(
+  WSPORT_ENV ?? (SINGLE_PORT ? PORT : 8787)
+);
 
 // ---- Static web server
 const app = express();
@@ -32,19 +46,34 @@ app.use('/assets', express.static(path.join(__dirname, '..', 'public', 'assets')
 app.use('/assets', express.static(path.join(__dirname, '..', 'src', 'assets')));
 app.use('/assets', express.static(path.join(__dirname, '..', 'assets')));
 
+// Health endpoint (useful for Fly/Render health checks)
+app.get('/healthz', (_req, res) => res.status(200).send('ok'));
+
 // Optional: silence favicon errors
 app.get('/favicon.ico', (_req, res) => res.sendStatus(204));
 
 const server = http.createServer(app);
 
-// --- SOP CHANGE: listen using process.env.PORT (server variant)
-const port = process.env.PORT || 8080;
-server.listen(port, () => console.log('WS up on', port));
+// --- SOP CHANGE: listen using process.env.PORT and bind to 0.0.0.0
+server.listen(PORT, HOST, () => {
+  console.log(`[HTTP] Listening on http://${HOST}:${PORT}  (SINGLE_PORT=${SINGLE_PORT ? 'on' : 'off'})`);
+});
 
 // ---- WebSocket server
-const wss = new WebSocketServer({ port: WSPORT }, () => {
-  console.log(`WebSocket server at ws://localhost:${WSPORT}`);
-});
+let wss;
+
+// Prefer single-port upgrade (share HTTP server) when SINGLE_PORT is on.
+// Otherwise, preserve the original separate-port listener on WSPORT.
+if (SINGLE_PORT) {
+  // Attach to the existing HTTP server (no second port).
+  wss = new WebSocketServer({ server });
+  console.log(`[WS] Attached to HTTP server on ${HOST}:${PORT} (shared port)`);
+} else {
+  // Original behavior: distinct WS port
+  wss = new WebSocketServer({ host: HOST, port: WSPORT }, () => {
+    console.log(`[WS] Listening on ws://${HOST}:${WSPORT} (separate port)`);
+  });
+}
 
 function broadcast(obj) {
   const msg = JSON.stringify(obj);
@@ -53,10 +82,21 @@ function broadcast(obj) {
   }
 }
 
-wss.on('connection', ws => {
+wss.on('connection', (ws, req) => {
+  // Optional lightweight origin check (enable via env to tighten prod)
+  const allowed = process.env.ALLOWED_ORIGIN;
+  if (process.env.NODE_ENV === 'production' && allowed) {
+    const origin = req?.headers?.origin;
+    if (origin !== allowed) {
+      try { ws.close(); } catch {}
+      return;
+    }
+  }
+
   try { ws.send(JSON.stringify({ type: 'hello', ts: Date.now() })); } catch {}
 });
 
+// ---- Optional HID bridge
 const HID_ENABLED = process.env.HID_ENABLED === '1';
 if (HID_ENABLED) {
   const hid = createHID({ enabled: true });
