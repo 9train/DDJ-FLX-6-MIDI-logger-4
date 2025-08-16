@@ -34,6 +34,12 @@
   <!-- Stage for the SVG board -->
   <section id="boardHost" aria-label="Controller visual"></section>
 
+  <!-- SOP ADDITION 1: Global default WS endpoint (viewers never send) -->
+  <script>
+    // Global default for viewer & host; viewers never send
+    window.WS_URL = window.WS_URL || "wss://ws.yourdomain.com";
+  </script>
+
   <!-- App wiring -->
   <script type="module">
     /****************************************************************
@@ -56,7 +62,7 @@
     import { initLauncher } from '/src/launcher.js';
     import * as THEME from '/src/theme.js';
 
-    // NEW (SOP addition): load current learned/ local mappings to push to viewers
+    // NEW (SOP addition previously added): load current learned/ local mappings to push to viewers
     import { loadMappings as loadLocalMappings } from '/src/mapper.js';
 
     /****************************************************************
@@ -90,15 +96,35 @@
     const mirrorLegacy  = () => { if (legacyStatus && wsStatusEl) legacyStatus.textContent = wsStatusEl.textContent; };
 
     /****************************************************************
-     * 5) WS bridge
+     * 5) Role + WS URL resolution (SOP ADDITION 2)
+     *    Prefer roles.js helpers if available, else original QS fallback.
      ****************************************************************/
+    let roleResolved = null;
+    let urlResolved  = null;
+
+    // Try roles.js pattern (your addition)
+    try {
+      const mod = await import('/src/roles.js');
+      if (mod?.getRole && mod?.getWSURL) {
+        roleResolved = mod.getRole();
+        urlResolved  = mod.getWSURL();
+      }
+    } catch { /* roles.js optional */ }
+
+    // Fallback: original QS-based logic (kept intact)
     const qs    = new URLSearchParams(location.search);
     const host  = location.hostname || 'localhost';
-    const wsURL = qs.get('ws') || `ws://${host}:` + (qs.get('wsport') || '8787');
-    const role  = qs.get('role') === 'viewer' ? 'viewer' : 'host';
+    const wsURL_fallback = qs.get('ws') || `ws://${host}:` + (qs.get('wsport') || '8787');
+    const role_fallback  = qs.get('role') === 'viewer' ? 'viewer' : 'host';
+
+    const role  = roleResolved || role_fallback;
+    const wsURL = urlResolved  || window.WS_URL || wsURL_fallback;
+
+    // Expose role globally (SOP ADDITION 3)
+    window.FLX_ROLE = role;
 
     /****************************************************************
-     * 5.1) Connect WS + forward host events to viewers
+     * 5.1) Connect WS + forward host events to viewers (original)
      ****************************************************************/
     const wsClient = connectWS({
       url: wsURL,
@@ -119,12 +145,17 @@
       };
     }
 
-    // NEW (SOP addition): When host connects, push the current learned map to all viewers
+    // NEW (SOP addition previously added): When host connects, push the current learned map to all viewers
     if (role === 'host') {
       const pushMap = () => {
         try {
           const mapArray = loadLocalMappings() || [];
-          wsClient?.sendMap?.(mapArray);
+          // prefer sendMap if available (from your ws layer), else send a typed message
+          if (wsClient?.sendMap) {
+            wsClient.sendMap(mapArray);
+          } else if (wsClient?.send) {
+            wsClient.send({ type: 'map_sync', payload: mapArray });
+          }
         } catch {}
       };
 
@@ -134,6 +165,11 @@
       // Re-send whenever you save/learn a new mapping (you already emit this)
       window.addEventListener('flx:map-updated', () => { pushMap(); });
     }
+
+    // Graceful cleanup (safe addition; no behavior change when not unloading)
+    window.addEventListener('beforeunload', () => {
+      try { wsClient?.close?.(); } catch {}
+    });
 
     /****************************************************************
      * 6) WebMIDI — single, stable init (object signature)
