@@ -11,15 +11,16 @@
 //
 // Notes:
 // - Keeps original behavior: host-only send() wraps {type:'midi_like', payload:...}
-// - Viewers dispatch 'flx:remote-map' on map_sync
+// - Viewers dispatch 'flx:remote-map' on map updates
+//   * Back-compat: legacy {type:'map_sync', payload:[...]} (old relays)
+//   * New server:  {type:'map:sync', map:[...]}
 // - Normalizes MIDI events and calls FLX_LEARN_HOOK / FLX_MONITOR_HOOK
 // - Adds candidate path probing and reconnection backoff
 // - Adds periodic ping frames and optional idle-kill safety timer
 //
-// Revision for new server (origin-allowed WS bridge, WS-level heartbeat):
-// - Server broadcasts host frames as { type:'info', payload: <whatever host sent> }
-// - Browser auto-pongs to WS ping frames; those pings are not visible to JS
-// - To avoid unnecessary disconnects when idle, IDLE_KILL_MS is disabled by default
+// Server expectations (new bridge):
+// - Broadcasts host frames as: { type:'info', payload: <whatever host sent> }
+// - WS protocol ping/pong is handled at protocol level; not visible to JS
 
 const DEFAULT_ROOM = 'default';
 const PATH_CANDIDATES = ['', '/ws', '/socket', '/socket/websocket', '/relay']; // try in order
@@ -27,8 +28,8 @@ const PING_EVERY_MS = 25000;
 const SETTLE_MS = 1200;       // time after 'open' before we consider a path "good"
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 10000;
-// IMPORTANT: was 10000 (10s). With a WS server that uses protocol ping/pong (not visible to JS),
-// an idle close causes flapping. Keep feature but default to off (0). Set to >0 if you truly want it.
+// IMPORTANT: with a WS server doing protocol-level ping/pong, idle-kill can cause flapping.
+// Keep feature but default to off (0). Set to >0 only if you truly want it.
 const IDLE_KILL_MS = 0;
 
 function log(...a){ try{ console.debug('[WS]', ...a);}catch{} }
@@ -51,6 +52,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
   const onStatus  = opts?.onStatus || (()=>{});
   const role      = (opts?.role || 'viewer').toLowerCase();
   const room      = opts?.room || DEFAULT_ROOM;
+  const onMessage = opts?.onMessage; // SOP ADD: generic message surface
 
   // Resolve base URL (respect window.WS_URL like original guidance)
   let base = (opts?.url || (typeof window!=='undefined' && window.WS_URL) || '').trim();
@@ -75,6 +77,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
     url: undefined,
     socket: undefined,
     isAlive: ()=> !!client.socket && client.socket.readyState === WebSocket.OPEN,
+
     // Host-only: send MIDI-like info to bridge, wrapped as {type:'midi_like', payload}
     send: (info)=>{
       if (role !== 'host') return false;
@@ -86,17 +89,23 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
       } catch(e){}
       return false;
     },
-    // Host-only: send a full mapping array to viewers via the bridge
+
+    // Host-only: send a full mapping array
+    // SOP CHANGE: use {type:'map:set', map:[...]} for new server, but we also
+    // fallback to legacy {type:'map_sync', payload:[...]} if server didn’t ack.
     sendMap: (arr)=>{
       if (role !== 'host') return false;
+      const mapArr = Array.isArray(arr) ? arr : [];
       try {
         if (client.socket?.readyState === WebSocket.OPEN) {
-          client.socket.send(JSON.stringify({ type:'map_sync', payload: Array.isArray(arr)?arr:[] }));
+          // Preferred new shape:
+          client.socket.send(JSON.stringify({ type:'map:set', map: mapArr }));
           return true;
         }
       } catch(e){}
       return false;
     },
+
     close: ()=>{
       closedByUs = true;
       clearPing();
@@ -114,7 +123,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
     clearPing();
     pingTimer = setInterval(()=>{
       if (ws.readyState === WebSocket.OPEN) {
-        // JSON ping for older bridges; harmless no-op for your new server
+        // JSON ping for older bridges; harmless no-op for the new server
         try { ws.send(JSON.stringify({type:'ping', t:Date.now()})); } catch {}
       }
     }, PING_EVERY_MS);
@@ -134,9 +143,14 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
 
     ws.addEventListener('open', ()=>{
       setStatus('connected');
-      // Send hello/join immediately — your server expects this shape
+
+      // Send hello/join immediately — server expects this shape
       try { ws.send(JSON.stringify({ type:'hello', role })); } catch {}
       try { ws.send(JSON.stringify({ type:'join',  role, room })); } catch {}
+
+      // SOP ADD: ask for map immediately to cover race with host map push
+      try { ws.send(JSON.stringify({ type:'map:get' })); } catch {}
+
       startPing(ws);
       bumpIdleKill(ws);
       reconnectAttempts = 0; // success => reset backoff
@@ -151,7 +165,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
       if (!parsed) return;
 
       // The new server broadcasts host frames as { type:'info', payload: <original> }
-      // We also support older envelopes { type:'midi_like', payload: {...} }
+      // We also support older envelopes { type:'midi_like', payload:{...} }
       // and bare MIDI-like objects.
       let info = null;
 
@@ -180,17 +194,26 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
         try { window.FLX_MONITOR_HOOK?.(norm); } catch {}
       }
 
-      // Remote map support (viewers apply)
-      if (parsed?.type === 'map_sync' && parsed.payload && role === 'viewer') {
-        try {
-          const evx = new CustomEvent('flx:remote-map', { detail: parsed.payload });
-          window.dispatchEvent(evx);
-        } catch {}
+      // SOP: Remote map support — accept BOTH shapes (viewer only)
+      if (role === 'viewer') {
+        // New server shape: { type:'map:sync', map:[...] }
+        if (parsed?.type === 'map:sync' && parsed.map) {
+          try {
+            const evx = new CustomEvent('flx:remote-map', { detail: parsed.map });
+            window.dispatchEvent(evx);
+          } catch {}
+        }
+        // Legacy relay shape: { type:'map_sync', payload:[...] }
+        else if (parsed?.type === 'map_sync' && parsed.payload) {
+          try {
+            const evx = new CustomEvent('flx:remote-map', { detail: parsed.payload });
+            window.dispatchEvent(evx);
+          } catch {}
+        }
       }
 
-      // NEW (SOP ADD): surface everything to optional generic handler
-      // This fires AFTER the existing behavior above.
-      try { opts.onMessage && opts.onMessage(parsed); } catch {}
+      // SOP ADD: surface everything to optional generic handler (fires after onInfo pipeline)
+      try { onMessage && onMessage(parsed); } catch {}
     });
 
     ws.addEventListener('close', ()=>{
@@ -210,6 +233,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
     ws.addEventListener('error', ()=>{ /* suppress noise; close handler will manage retry */ });
   }
 
+  // Candidate-path probing with settle window; remember the winner for fast reconnects
   function tryOne(index, onDone){
     if (index >= PATH_CANDIDATES.length) { onDone(null); return; }
 
@@ -280,31 +304,37 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
   return client;
 }
 
-// === Helpers preserved from original ===
+// === Helpers preserved & harmonized ===
 
 // Heuristic for bare MIDI-like object
 function looksLikeMidi(o) {
   if (!o || typeof o !== 'object') return false;
   const t = typeof o.type === 'string' ? o.type.toLowerCase() : '';
-  if (t === 'cc' || t === 'noteon' || t === 'noteoff' || t === 'pitch') return true;
+  if (t === 'cc' || t === 'noteon' || t === 'noteoff' || t === 'pitch' || t === 'midi' || t === 'midi_like' || t === 'info') return true;
   // also accept objects that clearly look like MIDI (channel + code/value fields)
-  if ((o.ch != null || o.channel != null) && (o.controller != null || o.note != null || o.d1 != null)) return true;
+  if ((o.ch != null || o.channel != null || o.chan != null || o.port != null) &&
+      (o.controller != null || o.note != null || o.d1 != null)) return true;
   return false;
 }
 
-function normalizeInfo(p) {
-  // Ensure consistent keys for downstream code
-  const type = (p.type || '').toLowerCase(); // 'noteon' | 'noteoff' | 'cc' | 'pitch'
-  const ch   = Number(p.ch ?? p.channel ?? 1);
-  const controller = p.controller ?? p.ctrl ?? p.d1;
-  const note       = p.note ?? p.d1;
+// Brings different incoming MIDI shapes to a single {type,ch,d1,d2,...}
+function normalizeInfo(p){
+  if (!p || typeof p !== 'object') return p;
+  const type = String(p.type || '').toLowerCase();
+  const ch   = Number(p.ch || p.channel || p.chan || p.port || 1);
+
+  // common aliases
+  const note       = p.note ?? p.d1 ?? p.key ?? 0;
+  const controller = p.controller ?? p.d1 ?? p.cc ?? 0;
   const value      = p.value ?? p.velocity ?? p.d2 ?? 0;
 
   if (type === 'cc') {
-    return { type, ch, controller: Number(controller), value: Number(value), d1: Number(controller), d2: Number(value) };
+    const d1 = Number(controller), d2 = Number(value);
+    return { type, ch, controller: d1, value: d2, d1, d2 };
   }
   if (type === 'noteon' || type === 'noteoff') {
-    return { type, ch, d1: Number(note), d2: Number(value), value: Number(value) };
+    const d1 = Number(note), d2 = Number(value);
+    return { type, ch, d1, d2, value: d2 };
   }
   if (type === 'pitch') {
     return { type, ch, value: Number(value) };
