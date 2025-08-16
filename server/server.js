@@ -1,7 +1,8 @@
 // server/server.js
 // Static web server + WebSocket + optional MIDI→WS bridge (ESM version)
-// SOP merge: integrates raw WS relay features (role/room, viewer-only broadcast,
-// heartbeat, hello/join/ping) without removing original functionality.
+// SOP merge: integrates rooms + map sync + room-scoped MIDI relay while keeping
+// original behavior (HTTP server, SINGLE_PORT, origin allow-list, HID/MIDI bridge,
+// global broadcast for HID/MIDI, heartbeat, hello/join/ping).
 
 import path from 'path';
 import express from 'express';
@@ -16,14 +17,13 @@ const __dirname  = path.dirname(__filename);
 
 // ---- Config (env with sensible defaults)
 const PORT        = Number(process.env.PORT || 8080);
-const HOST        = process.env.HOST || '0.0.0.0'; // SOP: ensure bind to all interfaces
-const WSPORT_ENV  = process.env.WSPORT;            // keep original env if user explicitly sets it
-const MIDI_INPUT  = process.env.MIDI_INPUT  || ''; // e.g., "DDJ-FLX6" or "IAC Driver HID Bridge"
-const MIDI_OUTPUT = process.env.MIDI_OUTPUT || ''; // optional (unused here, but kept for future)
+const HOST        = process.env.HOST || '0.0.0.0'; // SOP: bind to all interfaces
+const WSPORT_ENV  = process.env.WSPORT;            // preserve original env override
+const MIDI_INPUT  = process.env.MIDI_INPUT  || ''; // e.g., "DDJ-FLX6"
+const MIDI_OUTPUT = process.env.MIDI_OUTPUT || ''; // unused here, kept for future
 
 // Fly-friendly single port mode: attach WS to the HTTP server (no extra listener).
-// We DO NOT force this. It only activates if user opts-in or when running on Fly.
-// This preserves original multi-port behavior by default.
+// Activates only when explicitly enabled; preserves original behavior otherwise.
 const SINGLE_PORT =
   process.env.SINGLE_PORT === '1' ||
   process.env.FLY_IO === '1' ||
@@ -34,10 +34,7 @@ const WSPORT = Number(
   WSPORT_ENV ?? (SINGLE_PORT ? PORT : 8787)
 );
 
-// ---- Optional Origin allow-list (SOP: non-breaking by default)
-// - Original code allowed a single ALLOWED_ORIGIN in production.
-// - We keep that behavior and also support ALLOWED_ORIGINS (comma-separated).
-// - If neither is set, we DO NOT block (keeps local/dev working).
+// ---- Optional Origin allow-list (non-breaking by default)
 const SINGLE_ALLOWED = process.env.ALLOWED_ORIGIN?.trim();
 const MULTI_ALLOWED  = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
@@ -53,18 +50,22 @@ const ALLOWED_ORIGINS = new Set([
 // ---- Static web server
 const app = express();
 
-// Serve the public folder at root
+// Serve the public folder at root (includes /learned_map.json if you drop it there)
 app.use(express.static(path.join(__dirname, '..', 'public')));
+
+// SOP: ALSO serve a relative ./public for local/dev convenience (matches your snippet).
+// Safe: if a file isn't found here, Express falls through to the next middleware.
+app.use(express.static('public'));
 
 // Serve /src so ES module imports like /src/board.js load
 app.use('/src', express.static(path.join(__dirname, '..', 'src')));
 
-// ✅ Serve /assets from multiple possible locations (first match wins)
+// Serve /assets from common locations
 app.use('/assets', express.static(path.join(__dirname, '..', 'public', 'assets')));
 app.use('/assets', express.static(path.join(__dirname, '..', 'src', 'assets')));
 app.use('/assets', express.static(path.join(__dirname, '..', 'assets')));
 
-// Health endpoints (keep original and add /health for infra that expects it)
+// Health endpoints
 app.get('/healthz', (_req, res) => res.status(200).send('ok'));
 app.get('/health',  (_req, res) => res.status(200).send('ok'));
 app.get('/',        (_req, res) => res.status(200).send('ok'));
@@ -85,18 +86,15 @@ let wss;
 // Prefer single-port upgrade (share HTTP server) when SINGLE_PORT is on.
 // Otherwise, preserve the original separate-port listener on WSPORT.
 if (SINGLE_PORT) {
-  // Attach to the existing HTTP server (no second port).
   wss = new WebSocketServer({ server });
   console.log(`[WS] Attached to HTTP server on ${HOST}:${PORT} (shared port)`);
 } else {
-  // Original behavior: distinct WS port
   wss = new WebSocketServer({ host: HOST, port: WSPORT }, () => {
     console.log(`[WS] Listening on ws://${HOST}:${WSPORT} (separate port)`);
   });
 }
 
-// --- Broadcast helpers
-// Original broadcast (used by HID/MIDI bridge) — sends to ALL clients.
+// --- Global broadcast helper (original; used by HID/MIDI bridge)
 function broadcast(obj) {
   const msg = JSON.stringify(obj);
   for (const client of wss.clients) {
@@ -104,7 +102,27 @@ function broadcast(obj) {
   }
 }
 
-// NEW: viewer-scoped broadcast (for host → viewers in the same room)
+// === NEW: Room + Map state (SOP A) ===
+// rooms: roomName -> { clients:Set<WebSocket>, map: object|null }
+const rooms = new Map();
+
+function getRoom(room) {
+  if (!rooms.has(room)) rooms.set(room, { clients: new Set(), map: null });
+  return rooms.get(room);
+}
+
+// Broadcast to every client in a room (host or viewer), except optional sender
+function broadcastRoom(room, data, except) {
+  const payload = JSON.stringify(data);
+  const r = getRoom(room);
+  for (const c of r.clients) {
+    if (c !== except && c.readyState === WebSocket.OPEN) {
+      try { c.send(payload); } catch {}
+    }
+  }
+}
+
+// Keep the original viewer-scoped helper used by host → viewers info relay
 function broadcastToViewers(room, payload, exceptWs) {
   const msg = JSON.stringify({ type: 'info', payload, room });
   for (const client of wss.clients) {
@@ -124,12 +142,11 @@ wss.on('connection', (ws, req) => {
   // SOP: Keep original permissive behavior unless allow-list is configured.
   if (HAS_ALLOWLIST) {
     const origin = req?.headers?.origin || '';
-    if (!ALLOWED_ORIGINS.has(origin)) {
+       if (!ALLOWED_ORIGINS.has(origin)) {
       try { ws.close(1008, 'origin not allowed'); } catch {}
       return;
     }
   } else if (process.env.NODE_ENV === 'production' && process.env.ALLOWED_ORIGIN) {
-    // Preserve original single-origin prod tightening (legacy path)
     const origin = req?.headers?.origin;
     if (origin !== process.env.ALLOWED_ORIGIN) {
       try { ws.close(); } catch {}
@@ -139,7 +156,6 @@ wss.on('connection', (ws, req) => {
 
   // --- Parse role/room from URL query (?role=host&room=default)
   try {
-    // In Node HTTP upgrade, req.url is a path + query; base is required for URL()
     const parsed = new URL(req.url, 'http://localhost');
     ws.role = (parsed.searchParams.get('role') || 'viewer').toLowerCase();
     ws.room = parsed.searchParams.get('room') || 'default';
@@ -148,12 +164,17 @@ wss.on('connection', (ws, req) => {
     ws.room = 'default';
   }
 
-  // --- Heartbeat: mark alive and refresh on pong
+  // Heartbeat: mark alive and refresh on pong
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
 
-  // --- First hello back (useful for logs / client handshake)
+  // Initial hello back (handshake)
   try { ws.send(JSON.stringify({ type: 'hello', ts: Date.now() })); } catch {}
+
+  // === Join default room set immediately so room features work pre-join ===
+  // (Your snippet added on explicit 'join'; we also add at connect so map:get
+  // works right away if a viewer asks before sending 'join'.)
+  getRoom(ws.room).clients.add(ws);
 
   // --- Handle messages from clients
   ws.on('message', (buf) => {
@@ -161,26 +182,76 @@ wss.on('connection', (ws, req) => {
     try { msg = JSON.parse(buf.toString()); } catch {}
     if (!msg) return;
 
-    // Lightweight handshake support
-    if (msg.type === 'hello' && msg.role) { ws.role = String(msg.role).toLowerCase(); return; }
-    if (msg.type === 'join'  && msg.room) { ws.room = String(msg.room) || 'default'; return; }
+    // Lightweight handshake support (kept)
+    if (msg.type === 'hello' && msg.role) {
+      ws.role = String(msg.role).toLowerCase();
+      return;
+    }
 
-    // App-level ping (clients may send). Protocol ping/pong is preferred.
+    // === Room join (SOP A) ===
+    if (msg.type === 'join') {
+      ws.role = msg.role ? String(msg.role).toLowerCase() : ws.role;
+      const nextRoom = msg.room || ws.room || 'default';
+
+      // Move socket between room sets if needed
+      const prev = rooms.get(ws.room);
+      if (prev) prev.clients.delete(ws);
+      ws.room = nextRoom;
+      getRoom(ws.room).clients.add(ws);
+
+      // On join, if the room already has a map, sync it to the new client (SOP A)
+      const r = getRoom(ws.room);
+      if (r.map) {
+        try { ws.send(JSON.stringify({ type: 'map:sync', map: r.map })); } catch {}
+      }
+      return;
+    }
+
+    // App-level ping (protocol ping/pong preferred, kept for compatibility)
     if (msg.type === 'ping') { return; }
 
-    // Forward host events to all viewers in the same room (scoped relay).
+    // === Map set/get/sync (SOP A) ===
+    // Host (or any sender you trust) sets / updates the room's current map
+    if (msg.type === 'map:set' && ws.room) {
+      const r = getRoom(ws.room);
+      r.map = msg.map || null; // store full JSON object/array
+      // Broadcast to everyone in the room (viewers + host), excluding nobody
+      broadcastRoom(ws.room, { type: 'map:sync', map: r.map }, null);
+      return;
+    }
+
+    // Viewer asks server for current map (if they loaded empty)
+    if (msg.type === 'map:get' && ws.room) {
+      const r = getRoom(ws.room);
+      if (r.map) {
+        try { ws.send(JSON.stringify({ type: 'map:sync', map: r.map })); } catch {}
+      }
+      return;
+    }
+
+    // === Room-scoped MIDI relay (SOP B) ===
+    // Expect: { type:'midi', mtype:'noteon'|'noteoff'|'cc', ch, code/controller? , value? }
+    // We relay to all clients in the same room EXCEPT the sender.
+    if (msg.type === 'midi' && ws.room) {
+      broadcastRoom(ws.room, { ...msg }, ws);
+      return;
+    }
+
+    // === Original host→viewer scoped info relay preserved ===
     if (ws.role === 'host') {
-      // Relay the *original* message as payload (as in your raw relay design).
+      // Relay the original message as {type:'info', payload:<msg>, room}
       broadcastToViewers(ws.room, msg, ws);
     }
   });
 
-  ws.on('close', (_code, _reason) => {
-    // no-op; keep logs quiet
+  ws.on('close', () => {
+    // Remove from its room set
+    const r = rooms.get(ws.room);
+    if (r) r.clients.delete(ws);
   });
 });
 
-// --- Server-side heartbeat: send protocol pings every 30s
+// --- Server-side heartbeat: send protocol pings every 30s (original)
 const HEARTBEAT_MS = 30000;
 const hbInterval = setInterval(() => {
   for (const ws of wss.clients) {
@@ -190,6 +261,21 @@ const hbInterval = setInterval(() => {
   }
 }, HEARTBEAT_MS);
 
+// === SOP ADD: Room-scoped heartbeat (env-gated to avoid double pings by default) ===
+// Enable with ROOM_HEARTBEAT=1 if you specifically want to drive heartbeat via rooms.
+const ENABLE_ROOM_HEARTBEAT = process.env.ROOM_HEARTBEAT === '1';
+if (ENABLE_ROOM_HEARTBEAT) {
+  setInterval(() => {
+    for (const [_, r] of rooms) {
+      for (const ws of r.clients) {
+        if (!ws.isAlive) { ws.terminate(); continue; }
+        ws.isAlive = false;
+        try { ws.ping(); } catch {}
+      }
+    }
+  }, 30000);
+}
+
 // Clean up interval on shutdown
 process.on('SIGTERM', () => { clearInterval(hbInterval); server.close(()=>process.exit(0)); });
 process.on('SIGINT',  () => { clearInterval(hbInterval); server.close(()=>process.exit(0)); });
@@ -198,15 +284,14 @@ process.on('SIGINT',  () => { clearInterval(hbInterval); server.close(()=>proces
 const HID_ENABLED = process.env.HID_ENABLED === '1';
 if (HID_ENABLED) {
   const hid = createHID({ enabled: true });
-  hid.on('info',  (info) => broadcast(info));                        // <- push to all clients (original behavior)
+  // Keep original "broadcast to ALL clients" behavior for HID stream
+  hid.on('info',  (info) => broadcast(info));
   hid.on('log',   (m)    => console.log('[HID]', m));
   hid.on('error', (e)    => console.warn('[HID] error:', e?.message || e));
 }
 
 // ---- Optional: MIDI → WS bridge (Node side) (unchanged)
 let midiInput = null;
-
-// Try to load easymidi dynamically so the app still runs if it's not installed.
 try {
   const mod = await import('easymidi');           // dynamic ESM import of a CommonJS module
   const easymidi = mod.default ?? mod;            // interop: CJS may appear under .default
@@ -232,18 +317,18 @@ try {
             : (type === 'noteon' || type === 'noteoff')
               ? { type, ch, d1: d.note, d2: d.velocity, value: d.velocity }
               : { type, ch, ...d };
-        broadcast(info); // SOP: keep original "send to all clients" for MIDI/HID stream
+        // Preserve original behavior: HID/MIDI bridge goes to ALL clients globally
+        broadcast(info);
       };
 
       midiInput.on('noteon',  d => send('noteon', d));
       midiInput.on('noteoff', d => send('noteoff', d));
       midiInput.on('cc',      d => send('cc', d));
-      // add more (pitch, aftertouch, etc.) if you need them
     }
   } else {
     console.log('[MIDI] Node bridge idle. Set MIDI_INPUT="DDJ-FLX6" (or your IAC bus) to enable.');
   }
-} catch (e) {
+} catch {
   console.warn('[MIDI] easymidi not available. Skipping Node MIDI bridge. (WebMIDI in the browser will still work.)');
 }
 
