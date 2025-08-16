@@ -1,0 +1,634 @@
+[
+  {
+    "name": "KNOB_MERGEFX_L",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "knob_MERGEFX_L"
+  },
+  {
+    "name": "BTN_MERGEFX_SEL_L",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_MERGEFX_SEL_L"
+  },
+  {
+    "name": "BTN_JOG_CUTTER_L",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_JOG_CUTTER_L"
+  },
+  {
+    "name": "BTN_DECK_SELECT_L",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_DECK_SELECT_L"
+  },
+  {
+    "name": "JOG_L",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "jog_L"
+  },
+  {
+    "name": "MODE_HOTCUE_L",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "mode_HOTCUE_L"
+  },
+  {
+    "name": "MODE_PADFX_L",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "mode_PADFX_L"
+  },
+  {
+    "name": "MODE_BEATJUMP_L",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "mode_BEATJUMP_L"
+  },
+  {
+    "name": "MODE_SAMPLER_L",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "mode_SAMPLER_L"
+  },
+  {
+    "name": "PAD_L_1",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_L_1"
+  },
+  {
+    "name": "PAD_L_2",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_L_2"
+  },
+  {
+    "name": "PAD_L_3",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_L_3"
+  },
+  {
+    "name": "PAD_L_4",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_L_4"
+  },
+  {
+    "name": "PAD_L_5",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_L_5"
+  },
+  {
+    "name": "PAD_L_6",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_L_6"
+  },
+  {
+    "name": "PAD_L_7",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_L_7"
+  },
+  {
+    "name": "PAD_L_8",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_L_8"
+  },
+  {
+    "name": "SLIDER_TEMPO_L",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "slider_TEMPO_L"
+  },
+  {
+    "name": "BTN_LOAD_1",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_LOAD_1"
+  },
+  {
+    "name": "BTN_LOAD_2",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_LOAD_2"
+  },
+  {
+    "name": "BTN_LOAD_3",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_LOAD_3"
+  },
+  {
+    "name": "BTN_LOAD_4",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_LOAD_4"
+  },
+  {
+    "name": "TRIM_CH1",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "trim_ch1"
+  },
+  {
+    "name": "EQ_HI_CH1",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "eq_hi_ch1"
+  },
+  {
+    "name": "EQ_MID_CH1",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "eq_mid_ch1"
+  },
+  {
+    "name": "EQ_LOW_CH1",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "eq_low_ch1"
+  },
+  {
+    "name": "FILTER_CH1",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "filter_ch1"
+  },
+  {
+    "name": "CUE_CH1",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "cue_ch1"
+  },
+  {
+    "name": "SLIDER_CH1",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "slider_ch1"
+  },
+  {
+    "name": "TRIM_CH2",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "trim_ch2"
+  },
+  {
+    "name": "EQ_HI_CH2",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "eq_hi_ch2"
+  },
+  {
+    "name": "EQ_MID_CH2",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "eq_mid_ch2"
+  },
+  {
+    "name": "EQ_LOW_CH2",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "eq_low_ch2"
+  },
+  {
+    "name": "FILTER_CH2",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "filter_ch2"
+  },
+  {
+    "name": "CUE_CH2",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "cue_ch2"
+  },
+  {
+    "name": "SLIDER_CH2",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "slider_ch2"
+  },
+  {
+    "name": "TRIM_CH3",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "trim_ch3"
+  },
+  {
+    "name": "EQ_HI_CH3",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "eq_hi_ch3"
+  },
+  {
+    "name": "EQ_MID_CH3",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "eq_mid_ch3"
+  },
+  {
+    "name": "EQ_LOW_CH3",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "eq_low_ch3"
+  },
+  {
+    "name": "FILTER_CH3",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "filter_ch3"
+  },
+  {
+    "name": "CUE_CH3",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "cue_ch3"
+  },
+  {
+    "name": "SLIDER_CH3",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "slider_ch3"
+  },
+  {
+    "name": "TRIM_CH4",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "trim_ch4"
+  },
+  {
+    "name": "EQ_HI_CH4",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "eq_hi_ch4"
+  },
+  {
+    "name": "EQ_MID_CH4",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "eq_mid_ch4"
+  },
+  {
+    "name": "EQ_LOW_CH4",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "eq_low_ch4"
+  },
+  {
+    "name": "FILTER_CH4",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "filter_ch4"
+  },
+  {
+    "name": "CUE_CH4",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "cue_ch4"
+  },
+  {
+    "name": "SLIDER_CH4",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "slider_ch4"
+  },
+  {
+    "name": "XFADER",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "xfader"
+  },
+  {
+    "name": "MASTER_LEVEL",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "master_level"
+  },
+  {
+    "name": "BOOTH_LEVEL",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "booth_level"
+  },
+  {
+    "name": "BTN_BEATFX_SELECT",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_BEATFX_SELECT"
+  },
+  {
+    "name": "BTN_BEATFX_CH",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_BEATFX_CH"
+  },
+  {
+    "name": "BTN_BEAT_MINUS",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_BEAT_MINUS"
+  },
+  {
+    "name": "BTN_BEAT_PLUS",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_BEAT_PLUS"
+  },
+  {
+    "name": "KNOB_BEATFX_LEVEL",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "knob_BEATFX_LEVEL"
+  },
+  {
+    "name": "BTN_BEATFX_ON",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_BEATFX_ON"
+  },
+  {
+    "name": "LOOP_MEMORY_L",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "loop_memory_L"
+  },
+  {
+    "name": "LOOP_MEMORY_R",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "loop_memory_R"
+  },
+  {
+    "name": "JOG_R",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "jog_R"
+  },
+  {
+    "name": "BTN_JOG_CUTTER_R",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_JOG_CUTTER_R"
+  },
+  {
+    "name": "BTN_DECK_SELECT_R",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_DECK_SELECT_R"
+  },
+  {
+    "name": "KNOB_MERGEFX_R",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "knob_MERGEFX_R"
+  },
+  {
+    "name": "BTN_MERGEFX_SEL_R",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "btn_MERGEFX_SEL_R"
+  },
+  {
+    "name": "MODE_HOTCUE_R",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "mode_HOTCUE_R"
+  },
+  {
+    "name": "MODE_PADFX_R",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "mode_PADFX_R"
+  },
+  {
+    "name": "MODE_BEATJUMP_R",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "mode_BEATJUMP_R"
+  },
+  {
+    "name": "MODE_SAMPLER_R",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "mode_SAMPLER_R"
+  },
+  {
+    "name": "PAD_R_1",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_R_1"
+  },
+  {
+    "name": "PAD_R_2",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_R_2"
+  },
+  {
+    "name": "PAD_R_3",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_R_3"
+  },
+  {
+    "name": "PAD_R_4",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_R_4"
+  },
+  {
+    "name": "PAD_R_5",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_R_5"
+  },
+  {
+    "name": "PAD_R_6",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_R_6"
+  },
+  {
+    "name": "PAD_R_7",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_R_7"
+  },
+  {
+    "name": "PAD_R_8",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "pad_R_8"
+  },
+  {
+    "name": "SLIDER_TEMPO_R",
+    "key": "",
+    "type": "",
+    "ch": null,
+    "code": null,
+    "target": "slider_TEMPO_R"
+  }
+]

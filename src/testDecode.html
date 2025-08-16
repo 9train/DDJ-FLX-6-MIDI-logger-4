@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>decodeRelative7 Test</title>
+</head>
+<body>
+  <h1>decodeRelative7 Test</h1>
+  <pre id="output"></pre>
+
+  <script type="module">
+    import { decodeRelative7 } from './board.js'; // Adjust path if needed
+
+    const results = [
+      `decodeRelative7(1)   = ${decodeRelative7(1)}`,    // Expected: 1
+      `decodeRelative7(63)  = ${decodeRelative7(63)}`,   // Expected: 63
+      `decodeRelative7(64)  = ${decodeRelative7(64)}`,   // Expected: 0
+      `decodeRelative7(65)  = ${decodeRelative7(65)}`,   // Expected: -63
+      `decodeRelative7(127) = ${decodeRelative7(127)}`,  // Expected: -1
+    ];
+
+    document.getElementById('output').textContent = results.join('\n');
+    console.log('decodeRelative7 test results:', results);
+  </script>
+</body>
+</html>

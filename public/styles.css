@@ -1,0 +1,257 @@
+/* public/styles.css */
+
+/* ===== Theme vars ===== */
+:root {
+  /* Base palette */
+  --bg: #0b1020;
+  --panel: #10162b;
+  --ink: #cfe0ff;
+  --accent: #9fb2de; /* optional accent for text, etc. */
+  --lit: #5ec4ff;    /* glow color for .lit state */
+
+  /* Aliases kept from older builds */
+  --fg: var(--ink);
+  --panel-border: #33406b;
+
+  /* --- Group Theming defaults (used when SVG has .themed) --- */
+  --group-alpha: 1;
+
+  --rail-fill:          transparent;
+  --rail-stroke:        #33406b;
+
+  --fader-fill:         #0f1423;
+  --fader-stroke:       #2a3350;
+
+  --tempo-fill:         #0f1423;
+  --tempo-stroke:       #33406b;
+
+  --xfader-fill:        #0f1423;
+  --xfader-stroke:      #33406b;
+
+  --pad-fill:           #0f1423;
+  --pad-stroke:         #33406b;
+
+  --padmode-fill:       #10162b;
+  --padmode-stroke:     #33406b;
+
+  --knob-fill:          #1b2133;
+  --knob-stroke:        #33406b;
+
+  --knobnotch-fill:     #cfe0ff;
+  --knobnotch-stroke:   #cfe0ff;
+}
+
+/* ===== Base page ===== */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* For OBS compositing */
+body.transparent { background: transparent; }
+
+/* ===== UI toolbar ===== */
+#ui {
+  position: fixed;
+  inset: 12px 12px auto 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  z-index: 10;
+  color: #9fb2de;
+  pointer-events: none; /* let clicks pass through except on buttons */
+}
+#ui .left, #ui .right { pointer-events: auto; }
+
+button {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  color: var(--fg);
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: filter .12s ease, transform .04s ease;
+}
+button:hover { filter: brightness(1.12); }
+button:active { transform: translateY(1px); }
+
+/* ===== Stage / SVG container ===== */
+#boardHost {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+/* Default “fit”: keep aspect, fit inside window */
+#boardHost svg {
+  width: 90vw;
+  height: auto;
+  max-height: 90vh;
+  max-width: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* “Fill” mode: cover the frame (nice for OBS) */
+#boardHost.fill svg {
+  width: 100vw;
+  height: 100vh;
+  object-fit: cover;
+}
+
+/* ===== Lighting (SOFT glow only) ===== */
+.lit {
+  /* Keep original fills/strokes; just add gentle glow */
+  filter: drop-shadow(0 0 4px var(--lit)) drop-shadow(0 0 10px var(--lit));
+}
+
+/* ===== Motion / transitions ===== */
+/* Smooth rotation for knobs & jogs (CSS transform; we don’t clobber original translate) */
+[id^="trim_"],
+[id^="hi_"],
+[id^="mid_"],
+[id^="low_"],
+[id^="filter_"],
+[id^="knob_"],
+[id^="jog_"] {
+  transition: transform 90ms linear;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* Smooth position for faders / tempos / xfader caps when we update x/y attributes */
+[id^="slider_"],
+#xfader,
+#xfader_slider,
+[id*="TEMPO"] {
+  transition: x .06s linear, y .06s linear;
+}
+
+/* ===== Optional hit areas (if you have invisible hit rects) ===== */
+.hit {
+  fill: rgba(27, 33, 51, 0.6);
+  stroke: var(--panel-border);
+  stroke-width: 2;
+}
+
+/* ===== FAB (floating launcher) ===== */
+#fab {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 20px;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0,0,0,.35);
+  z-index: 10000;
+}
+#fab:hover { filter: brightness(1.1); }
+
+#fabSheet {
+  position: fixed;
+  right: 16px;
+  bottom: 72px;
+  width: min(420px, 92vw);
+  max-height: 70vh;
+  overflow: auto;
+  padding: 12px;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(0,0,0,.45);
+  z-index: 10000;
+  display: none;
+}
+#fabSheet.open { display: block; }
+
+#fabSheet .fab-section { margin-bottom: 12px; }
+#fabSheet .fab-title { font-weight: 600; opacity: .9; margin: 4px 0 6px; }
+#fabSheet .fab-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+#fabSheet button {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  color: var(--ink);
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+#fabSheet button:hover { filter: brightness(1.12); }
+#fabSheet .fab-upload {
+  display: inline-flex;
+  gap: 8px; align-items: center;
+  margin-top: 8px;
+}
+#fabSheet input[type="file"] { width: 180px; }
+#fabSheet .fab-presets {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+}
+
+/* ===== Group Theming (scoped) ===== */
+/* Applies when the SVG root has .themed (toggled by theme designer) */
+#boardHost svg.themed .g-rail,
+#boardHost svg.themed .g-rail * {
+  fill: color-mix(in oklab, var(--rail-fill) calc(100% * var(--group-alpha)), transparent);
+  stroke: var(--rail-stroke);
+}
+
+#boardHost svg.themed .g-fader,
+#boardHost svg.themed .g-fader * {
+  fill: color-mix(in oklab, var(--fader-fill) calc(100% * var(--group-alpha)), transparent);
+  stroke: var(--fader-stroke);
+}
+
+#boardHost svg.themed .g-tempo,
+#boardHost svg.themed .g-tempo * {
+  fill: color-mix(in oklab, var(--tempo-fill) calc(100% * var(--group-alpha)), transparent);
+  stroke: var(--tempo-stroke);
+}
+
+#boardHost svg.themed .g-xfader,
+#boardHost svg.themed .g-xfader * {
+  fill: color-mix(in oklab, var(--xfader-fill) calc(100% * var(--group-alpha)), transparent);
+  stroke: var(--xfader-stroke);
+}
+
+#boardHost svg.themed .g-pad,
+#boardHost svg.themed .g-pad * {
+  fill: color-mix(in oklab, var(--pad-fill) calc(100% * var(--group-alpha)), transparent);
+  stroke: var(--pad-stroke);
+}
+
+#boardHost svg.themed .g-pad-mode,
+#boardHost svg.themed .g-pad-mode * {
+  fill: color-mix(in oklab, var(--padmode-fill) calc(100% * var(--group-alpha)), transparent);
+  stroke: var(--padmode-stroke);
+}
+
+#boardHost svg.themed .g-knob,
+#boardHost svg.themed .g-knob * {
+  fill: color-mix(in oklab, var(--knob-fill) calc(100% * var(--group-alpha)), transparent);
+  stroke: var(--knob-stroke);
+}
+
+#boardHost svg.themed .g-knob-notch,
+#boardHost svg.themed .g-knob-notch * {
+  fill: color-mix(in oklab, var(--knobnotch-fill) calc(100% * var(--group-alpha)), transparent);
+  stroke: var(--knobnotch-stroke);
+}
+
+/* ===== Utilities ===== */
+.muted { opacity: 0.5; }
+.hidden { display: none !important; }
