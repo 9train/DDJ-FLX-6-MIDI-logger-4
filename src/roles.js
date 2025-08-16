@@ -16,15 +16,14 @@ export function getWSURL() {
   // Environment/global fallback (you can set this in a script tag or inline)
   if (window.WS_URL) return window.WS_URL;
 
-  // Last-resort: try the same host but wss:// and / (shared-port Fly deploy)
+  // Last-resort: try the same host but wss:// and ws.* subdomain
   // e.g., https://visual.yourdomain.com -> wss://ws.yourdomain.com
-  // If you want exact mapping, set window.WS_URL in index.html.
   try {
     const u = new URL(location.href);
     const likely = u.hostname.replace(/^visual\./, 'ws.');
     return `wss://${likely}`;
   } catch {
-    // SOP edit: use your real domain fallback
+    // Fallback to your real domain
     return `wss://ws.setsoutofcontext.com`;
   }
 }
