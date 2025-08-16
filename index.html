@@ -420,7 +420,7 @@
           ['Theme',       () => THEME.toggle()],
           ['Jog Panel',   () => Jog.toggle()],
           ['Fit',         () => stage.classList.remove('fill')],
-          ['Fill',        => stage.classList.add('fill')],
+          ['Fill',        () => stage.classList.add('fill')],
           ['Toggle BG',   () => document.body.classList.toggle('transparent')],
         ];
         const names = choices.map(([n]) => '• ' + n).join('\n');
