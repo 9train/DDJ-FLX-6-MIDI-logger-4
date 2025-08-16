@@ -110,19 +110,31 @@
     // Forward every local event to server
     const origConsume = window.consumeInfo;
     window.consumeInfo = (info) => {
-      if (wsClient?.isAlive?.()) wsClient.send(info);
+      if (wsClient?.isAlive?.()) wsClient.send(info); // sends raw {type:'cc'|'noteon'|...}
       return origConsume(info);
     };
 
-    // Push learned map to viewers
-    const pushMap = () => {
+    /****************************************************************
+     * ADD (SOP): auto-push learned map to the room
+     * - Uses your requested snippet verbatim, adapted to this file.
+     * - Prefer wsClient.sendMap; fallback sends {type:'map:set', map, ts}.
+     * - Push after boot + whenever Wizard/Mapper fires 'flx:map-updated'.
+     ****************************************************************/
+    function pushMap() {
       try {
         const mapArray = loadMappings() || [];
-        if (wsClient?.sendMap) wsClient.sendMap(mapArray);
-        else if (wsClient?.send) wsClient.send({ type: 'map_sync', payload: mapArray });
-      } catch {}
-    };
+        if (wsClient?.sendMap) {
+          wsClient.sendMap(mapArray);
+        } else {
+          wsClient?.send?.({ type: 'map:set', map: mapArray, ts: Date.now() });
+        }
+      } catch (e) {
+        console.warn('[host] pushMap failed', e);
+      }
+    }
+    // Push shortly after boot, so late-joining viewers get it
     setTimeout(pushMap, 250);
+    // Push whenever Wizard/Mapper updates the map
     window.addEventListener('flx:map-updated', pushMap);
 
     /****************************************************************
@@ -285,6 +297,7 @@
     /****************************************************************
      * Toolbar + Hotkeys
      ****************************************************************/
+    const stageEl = document.getElementById('boardHost');
     document.getElementById('fit')     ?.addEventListener('click',  () => stageEl.classList.remove('fill'));
     document.getElementById('fill')    ?.addEventListener('click',  () => stageEl.classList.add('fill'));
     document.getElementById('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
