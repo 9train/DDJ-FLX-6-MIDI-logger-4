@@ -1,27 +1,22 @@
 # Dockerfile — production image for server/server.js (ESM)
 FROM node:18-alpine
 
-# System deps: tini for proper signal handling (optional but nice)
+# tini for proper signal handling (now with subreaper enabled)
 RUN apk add --no-cache tini
 
 WORKDIR /app
 
-# Install only what package.json needs
+# Install only dependencies
 COPY package*.json ./
-# Use CI install for reproducibility; omit dev deps in prod
 RUN npm ci --omit=dev
 
 # Copy the rest of the project
 COPY . .
 
-# Environment (can be overridden by Fly)
 ENV NODE_ENV=production
-
-# The app will listen on process.env.PORT (Fly sets this). We default to 8080.
+# App listens on PORT, default 8080
 EXPOSE 8080
 
-# Use tini as init to handle signals gracefully
-ENTRYPOINT ["/sbin/tini", "--"]
-
-# Start the server; your package.json should have "start": "node server/server.js"
+# Run tini as PID 1, with -s (subreaper) to avoid the dashboard warning
+ENTRYPOINT ["/sbin/tini", "-s", "--"]
 CMD ["npm", "start"]
