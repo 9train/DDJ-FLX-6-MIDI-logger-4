@@ -45,7 +45,7 @@
     import { initBoard, consumeInfo as boardConsume, getUnifiedMap } from '/src/board.js';
     import { connectWS }   from '/src/ws.js';
     import * as THEME      from '/src/theme.js';
-    import { initWebMIDI } from '/src/midi.js';
+    import { initWebMIDI, bootMIDIFromQuery } from '/src/midi.js'; /* SOP: added bootMIDIFromQuery */
     import { recorder as FLXRec } from '/src/recorder.js';
     import * as RECUI   from '/src/recorder_ui.js';
     import * as DIAG    from '/src/diag.js';
@@ -133,59 +133,69 @@
     window.addEventListener('flx:map-updated', pushMap);
 
     /****************************************************************
-     * WebMIDI capture (host only) — with device resolver + init logs (SOP)
+     * WebMIDI capture (host only) — SOP helper (ESM usage)
+     * Uses URL params:
+     *   ?midi=<name>   — preferred device (defaults to "DDJ-FLX6")
+     *   ?logmidi       — enable verbose MIDI logs
      ****************************************************************/
-    // Resolve a real device name before initWebMIDI (case-insensitive, substring ok)
-    async function resolvePreferredMidiName() {
-      try {
-        const qs = new URLSearchParams(location.search);
-        const want = (qs.get('midi') || 'DDJ-FLX6').toLowerCase();
-
-        if (!('requestMIDIAccess' in navigator)) {
-          setMIDIStatus('unsupported');
-          return want; // still return something
-        }
-        const access = await navigator.requestMIDIAccess();
-        const inputs = [...access.inputs.values()];
-        if (!inputs.length) {
-          setMIDIStatus('no devices');
-          return want;
-        }
-        // 1) exact (case-insensitive)
-        let pick = inputs.find(i => i.name.toLowerCase() === want);
-        // 2) substring match
-        if (!pick) pick = inputs.find(i => i.name.toLowerCase().includes(want));
-        // 3) fallback: first device
-        if (!pick) pick = inputs[0];
-
-        console.log('[MIDI] picked input:', pick.name);
-        setMIDIStatus('choosing ' + pick.name);
-        return pick.name;
-      } catch (e) {
-        console.warn('[MIDI] resolve failed', e);
-        return (new URLSearchParams(location.search)).get('midi') || 'DDJ-FLX6';
-      }
-    }
-
     try {
-      // pick best available device name, honoring ?midi= if provided
-      const preferredName = await resolvePreferredMidiName();
-
-      // === Requested logging wrapper around initWebMIDI ===
-      console.log('[MIDI] starting init');
-      await initWebMIDI({
-        onInfo: (info) => window.consumeInfo(info),
-        preferredInput: preferredName,
-        onStatus: (s) => setMIDIStatus(s),
-        // keep your original behavior for logmidi flag
-        log: (new URLSearchParams(location.search)).has('logmidi')
+      console.log('[MIDI] starting init via bootMIDIFromQuery');
+      const handle = await bootMIDIFromQuery({
+        onInfo: function(info){ try { window.consumeInfo && window.consumeInfo(info); } catch {} },
+        onStatus: function(s){ try { setMIDIStatus && setMIDIStatus(s); } catch {} }
       });
+      // You still have access to handle.access / handle.input if needed
       console.log('[MIDI] init OK');
-      // === end requested logging wrapper ===
     } catch (e) {
       console.warn('[MIDI] init failed', e);
       setMIDIStatus('host: off');
     }
+
+    /* ----------------------------------------------------------------
+     * PREVIOUS manual MIDI init kept for reference (DISABLED to avoid
+     * double init). Uncomment to revert.
+     * ----------------------------------------------------------------
+    // // Resolve a real device name before initWebMIDI (case-insensitive, substring ok)
+    // async function resolvePreferredMidiName() {
+    //   try {
+    //     const qs = new URLSearchParams(location.search);
+    //     const want = (qs.get('midi') || 'DDJ-FLX6').toLowerCase();
+    //     if (!('requestMIDIAccess' in navigator)) {
+    //       setMIDIStatus('unsupported');
+    //       return want; // still return something
+    //     }
+    //     const access = await navigator.requestMIDIAccess();
+    //     const inputs = [...access.inputs.values()];
+    //     if (!inputs.length) {
+    //       setMIDIStatus('no devices');
+    //       return want;
+    //     }
+    //     let pick = inputs.find(i => i.name.toLowerCase() === want);
+    //     if (!pick) pick = inputs.find(i => i.name.toLowerCase().includes(want));
+    //     if (!pick) pick = inputs[0];
+    //     console.log('[MIDI] picked input:', pick.name);
+    //     setMIDIStatus('choosing ' + pick.name);
+    //     return pick.name;
+    //   } catch (e) {
+    //     console.warn('[MIDI] resolve failed', e);
+    //     return (new URLSearchParams(location.search)).get('midi') || 'DDJ-FLX6';
+    //   }
+    // }
+    // try {
+    //   const preferredName = await resolvePreferredMidiName();
+    //   console.log('[MIDI] starting init');
+    //   await initWebMIDI({
+    //     onInfo: (info) => window.consumeInfo(info),
+    //     preferredInput: preferredName,
+    //     onStatus: (s) => setMIDIStatus(s),
+    //     log: (new URLSearchParams(location.search)).has('logmidi')
+    //   });
+    //   console.log('[MIDI] init OK');
+    // } catch (e) {
+    //   console.warn('[MIDI] init failed', e);
+    //   setMIDIStatus('host: off');
+    // }
+    */
 
     /****************************************************************
      * Recorder (full)
@@ -333,6 +343,7 @@
     /****************************************************************
      * Toolbar + Hotkeys
      ****************************************************************/
+    const stageEl = document.getElementById('boardHost');
     document.getElementById('fit')     ?.addEventListener('click',  () => stageEl.classList.remove('fill'));
     document.getElementById('fill')    ?.addEventListener('click',  () => stageEl.classList.add('fill'));
     document.getElementById('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
