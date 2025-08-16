@@ -5,27 +5,9 @@
   <title>FLX6 Visualizer</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="stylesheet" href="./styles.css" />
-
-  <!-- SOP: viewer-only UI trim (host unaffected by CSS below) -->
-  <style>
-    /* Viewer: hide only Rec + Save; keep Stop/Play/Load visible */
-    body.viewer #recStart,
-    body.viewer #recSave {
-      display: none !important;
-    }
-    /* Viewer: hide any host panels/menus if something tried to show them */
-    body.viewer .panel,
-    body.viewer [data-panel],
-    body.viewer .edit-toolbar,
-    body.viewer .wizard,
-    body.viewer .diagnostics,
-    body.viewer .timeline {
-      display: none !important;
-    }
-  </style>
 </head>
 <body>
-  <!-- Top toolbar (you can hide this in OBS if you prefer) -->
+  <!-- Minimal toolbar shown to both roles -->
   <div id="ui">
     <div class="left" style="display:flex;gap:8px;align-items:center;">
       <button id="fit" title="Fit SVG inside window">Fit</button>
@@ -35,14 +17,13 @@
     <div class="right" style="display:flex;gap:10px;align-items:center;">
       <span id="wsStatus">WS: ⏳</span>
       <span id="midiStatus">MIDI: ⏳</span>
-      <div id="presetMount" style="display:flex;gap:8px;align-items:center;"></div>
 
-      <!-- Recorder controls -->
+      <!-- Recorder controls: host sees all; viewer sees Stop/Play/Load only (CSS hides Rec/Save) -->
       <button id="recStart" title="Start recording incoming MIDI">Rec</button>
       <button id="recStop"  title="Stop recording">Stop</button>
       <button id="recPlay"  title="Play last recording">Play</button>
       <button id="recSave"  title="Download as JSON">Save</button>
-      <label style="display:inline-flex;align-items:center;gap:6px;">
+      <label id="recLoadWrap" style="display:inline-flex;align-items:center;gap:6px;">
         Load
         <input id="recLoad" type="file" accept="application/json" style="width:150px;" />
       </label>
@@ -52,109 +33,86 @@
   <!-- Stage for the SVG board -->
   <section id="boardHost" aria-label="Controller visual"></section>
 
-  <!-- Global default WS endpoint (viewers never send) -->
+  <!-- Default WS endpoint; roles.js can also auto-derive ws.* from visual.* -->
   <script>
     window.WS_URL = window.WS_URL || "wss://ws.setsoutofcontext.com";
   </script>
 
-  <!-- App wiring -->
   <script type="module">
     /****************************************************************
-     * Imports (keep core static; load host-only stuff later)
+     * Core imports (safe for both roles)
      ****************************************************************/
     import { initBoard, consumeInfo as boardConsume, getUnifiedMap } from '/src/board.js';
-    import { connectWS }   from '/src/ws.js';
     import * as THEME from '/src/theme.js';
+    import { connectWS } from '/src/ws.js';
 
     /****************************************************************
-     * Role + WS URL resolution (prefer roles.js if present)
+     * Role + WS URL resolution
      ****************************************************************/
-    let roleResolved = null;
-    let urlResolved  = null;
+    let role = 'viewer';
+    let wsURL = window.WS_URL;
 
     try {
       const mod = await import('/src/roles.js');
-      if (mod?.getRole && mod?.getWSURL) {
-        roleResolved = mod.getRole();
-        urlResolved  = mod.getWSURL();
+      if (mod?.getRole) role = mod.getRole();      // 'host' or 'viewer'
+      if (mod?.getWSURL) wsURL = mod.getWSURL();   // resolves wss://ws.yourdomain.com
+    } catch {
+      // Fallback if roles.js not present
+      const qs = new URLSearchParams(location.search);
+      role = qs.get('role') === 'host' ? 'host' : 'viewer';
+      if (!wsURL) {
+        const host = location.hostname || 'localhost';
+        wsURL = qs.get('ws') || `ws://${host}:` + (qs.get('wsport') || '8787');
       }
-    } catch { /* optional */ }
+    }
 
-    const qs    = new URLSearchParams(location.search);
-    const host  = location.hostname || 'localhost';
-    const wsURL_fallback = qs.get('ws') || `ws://${host}:` + (qs.get('wsport') || '8787');
-    const role  = roleResolved || (qs.get('role') === 'host' ? 'host' : 'viewer');
-    const wsURL = urlResolved  || window.WS_URL || wsURL_fallback;
-
-    // Expose role and tag <body> for CSS
-    window.FLX_ROLE = role;
     document.body.classList.add(role);
     document.body.dataset.role = role;
+    window.FLX_ROLE = role;
 
     /****************************************************************
-     * Init: board + Theme
+     * Init: board + Theme (Shift+T toggles Theme)
      ****************************************************************/
     await initBoard({ hostId: 'boardHost' });
     THEME.attachThemeDesigner({ svgRoot: document.querySelector('#boardHost svg') });
-    // Shift+T to toggle Theme
 
     /****************************************************************
-     * Unified consumer
+     * Unified consumer (render into board)
      ****************************************************************/
     const baseConsume = (info) => boardConsume(info);
     window.consumeInfo = baseConsume;
 
     /****************************************************************
-     * Status helpers (+ legacy #status mirror if present)
+     * Status helpers
      ****************************************************************/
     const wsStatusEl   = document.getElementById('wsStatus');
     const midiStatusEl = document.getElementById('midiStatus');
     const setWSStatus   = (s) => { if (wsStatusEl)   wsStatusEl.textContent   = 'WS: '   + s; };
     const setMIDIStatus = (s) => { if (midiStatusEl) midiStatusEl.textContent = 'MIDI: ' + s; };
-    const legacyStatus  = document.getElementById('status');
-    const mirrorLegacy  = () => { if (legacyStatus && wsStatusEl) legacyStatus.textContent = wsStatusEl.textContent; };
 
     /****************************************************************
-     * Host: ensure recorder installed BEFORE WS/WebMIDI (preserve behavior)
-     ****************************************************************/
-    let FLXRec, RECUI;
-    if (role === 'host') {
-      try {
-        ({ recorder: FLXRec } = await import('/src/recorder.js'));
-        // Preserve original behavior: recorder installs early to catch events
-        FLXRec.install?.();
-      } catch {}
-    }
-
-    /****************************************************************
-     * WebSocket
+     * WebSocket (shared)
      ****************************************************************/
     const wsClient = connectWS({
       url: wsURL,
       role,
       onInfo: (info) => window.consumeInfo(info),
-      onStatus: (s) => { setWSStatus(s); mirrorLegacy(); },
+      onStatus: (s) => setWSStatus(s),
     });
     window.wsClient = wsClient;
 
     /****************************************************************
-     * Host: forward every local event to server
+     * Host-only: forward local events to server + push map + WebMIDI
      ****************************************************************/
     if (role === 'host') {
+      // Forward every event to server
       const origConsume = window.consumeInfo;
       window.consumeInfo = (info) => {
         if (wsClient?.isAlive?.()) wsClient.send(info);
         return origConsume(info);
       };
-    } else {
-      // Viewer doesn’t use WebMIDI
-      setMIDIStatus('viewer');
-    }
 
-    /****************************************************************
-     * Host: push learned map to viewers
-     ****************************************************************/
-    if (role === 'host') {
+      // Push learned map to viewers
       try {
         const { loadMappings } = await import('/src/mapper.js');
         const pushMap = () => {
@@ -167,14 +125,11 @@
         setTimeout(pushMap, 250);
         window.addEventListener('flx:map-updated', pushMap);
       } catch {}
-    }
 
-    /****************************************************************
-     * WebMIDI (host only)
-     ****************************************************************/
-    if (role === 'host') {
+      // WebMIDI capture (host only)
       try {
         const { initWebMIDI } = await import('/src/midi.js');
+        const qs = new URLSearchParams(location.search);
         const preferred = qs.get('midi') || 'DDJ-FLX6';
         await initWebMIDI({
           onInfo: (info) => window.consumeInfo(info),
@@ -182,41 +137,49 @@
           onStatus: (s) => setMIDIStatus(s),
           log: qs.has('logmidi')
         });
-      } catch {}
+      } catch { setMIDIStatus('host: off'); }
+    } else {
+      setMIDIStatus('viewer');
     }
 
     /****************************************************************
      * Recorder wiring
-     * - Host: full (Start/Stop/Play/Save/Load) + RECUI refresh
-     * - Viewer: NO Start/Save; YES Stop/Play/Load (no RECUI)
+     * - Host: full (Start/Stop/Play/Save/Load)
+     * - Viewer: Stop/Play/Load only (no Start/Save bindings)
      ****************************************************************/
     const $ = (id) => document.getElementById(id);
     const stage = document.getElementById('boardHost');
 
     if (role === 'host') {
       try {
-        RECUI = await import('/src/recorder_ui.js');
-        $('recStart')?.addEventListener('click', () => { FLXRec?.start?.(); setTimeout(()=>RECUI.refresh?.(), 50); });
-        $('recStop') ?.addEventListener('click', () => { FLXRec?.stop?.();  RECUI.refresh?.(); });
-        $('recPlay') ?.addEventListener('click', () => FLXRec?.play?.({ speed: 1.0, loop: false }));
-        $('recSave') ?.addEventListener('click', () => FLXRec?.download?.('take.json'));
+        const [{ recorder: FLXRec }, RECUI] = await Promise.all([
+          import('/src/recorder.js'),
+          import('/src/recorder_ui.js')
+        ]);
+        window.recorder = FLXRec;
+
+        $('recStart')?.addEventListener('click', () => { FLXRec.start(); setTimeout(()=>RECUI.refresh(), 50); });
+        $('recStop') ?.addEventListener('click', () => { FLXRec.stop();  RECUI.refresh(); });
+        $('recPlay') ?.addEventListener('click', () => FLXRec.play({ speed: 1.0, loop: false }));
+        $('recSave') ?.addEventListener('click', () => FLXRec.download('take.json'));
         $('recLoad') ?.addEventListener('change', async (e) => {
           const file = e.target.files?.[0]; if (!file) return;
           const text = await file.text();
-          await FLXRec?.loadFromText?.(text);
-          RECUI.refresh?.();
+          await FLXRec.loadFromText(text);
+          RECUI.refresh();
         });
       } catch {}
     } else {
-      // Viewer: load minimal recorder for Load/Play/Stop only
       try {
-        const { recorder: VRec } = await import('/src/recorder.js');
-        $('recStop') ?.addEventListener('click', () => { VRec?.stop?.(); });
-        $('recPlay') ?.addEventListener('click', () => VRec?.play?.({ speed: 1.0, loop: false }));
+        const { recorder: FLXRec } = await import('/src/recorder.js');
+        window.recorder = FLXRec;
+
+        $('recStop') ?.addEventListener('click', () => { FLXRec.stop(); });
+        $('recPlay') ?.addEventListener('click', () => FLXRec.play({ speed: 1.0, loop: false }));
         $('recLoad') ?.addEventListener('change', async (e) => {
           const file = e.target.files?.[0]; if (!file) return;
           const text = await file.text();
-          await VRec?.loadFromText?.(text);
+          await FLXRec.loadFromText(text);
         });
       } catch {}
     }
@@ -229,7 +192,7 @@
     $('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
 
     /****************************************************************
-     * Jog Physics (“Tape Mode”) — preserved from original
+     * Jog Physics (“Tape Mode”) — preserved
      ****************************************************************/
     const Jog = (() => {
       const CFG = { mode:'off', sensitivity:2.5, damping:0.92 };
@@ -262,7 +225,7 @@
           el.style.transformOrigin = 'center';
           el.style.transform = `rotate(${ang}deg)`;
         } catch {}
-        try {
+        try { // attribute fallback
           const bb=el.getBBox(); const cx=bb.x+bb.width/2, cy=bb.y+bb.height/2;
           el.setAttribute('transform', `rotate(${ang} ${cx} ${cy})`);
         } catch {}
@@ -372,17 +335,16 @@
     })();
 
     /****************************************************************
-     * Launcher
-     * - Host: full menu (diagnostics/timeline/wizard/edit/theme + rec + jog + presets)
-     * - Viewer: ONLY Theme + Fit/Fill/Toggle BG (no presets UI, no timeline)
+     * Launcher (menus)
+     * - Host: load full launcher + panels
+     * - Viewer: only Theme/Fit/Fill/Toggle BG (no presets UI, no timeline)
      ****************************************************************/
-    let launcherOk = false;
-    try {
-      const { initLauncher } = await import('/src/launcher.js');
-
-      if (role === 'host') {
-        const [DIAG, PRESETS, EDIT, WIZ] = await Promise.all([
+    if (role === 'host') {
+      try {
+        const { initLauncher } = await import('/src/launcher.js');
+        const [DIAG, RECUI, PRESETS, EDIT, WIZ] = await Promise.all([
           import('/src/diag.js'),
+          import('/src/recorder_ui.js'),
           import('/src/presets.js'),
           import('/src/editmode.js'),
           import('/src/wizard.js'),
@@ -390,28 +352,32 @@
 
         initLauncher({
           actions: {
-            // Panels
+            // Panels (host only)
             toggleDiag:     () => DIAG.toggle(),
-            toggleTimeline: () => import('/src/recorder_ui.js').then(m => m.toggle()),
+            toggleTimeline: () => RECUI.toggle(),
             toggleWizard:   () => WIZ.toggle(),
             toggleEdit:     () => EDIT.toggle(),
-            toggleTheme:    () => THEME.toggle(),
-            toggleJog:      () => Jog.toggle(),
-            // View
-            fit:      () => stage.classList.remove('fill'),
-            fill:     () => stage.classList.add('fill'),
-            toggleBG: () => document.body.classList.toggle('transparent'),
-            // Recorder
-            recStart:  () => { FLXRec?.start?.(); setTimeout(()=>RECUI?.refresh?.(), 50); },
-            recStop:   () => { FLXRec?.stop?.();  RECUI?.refresh?.(); },
-            recPlay:   () =>  FLXRec?.play?.({ speed: 1.0, loop: false }),
-            recSave:   () =>  FLXRec?.download?.('take.json'),
-            recLoadText: async (text) => { await FLXRec?.loadFromText?.(text); RECUI?.refresh?.(); },
+            // Theme + basic view
+            toggleTheme: () => THEME.toggle(),
+            fit:        () => stage.classList.remove('fill'),
+            fill:       () => stage.classList.add('fill'),
+            toggleBG:   () => document.body.classList.toggle('transparent'),
+            // Recorder actions
+            recStart:  () => { window.recorder?.start(); setTimeout(()=>RECUI.refresh(), 50); },
+            recStop:   () => { window.recorder?.stop();  RECUI.refresh(); },
+            recPlay:   () =>  window.recorder?.play?.({ speed: 1.0, loop: false }),
+            recSave:   () =>  window.recorder?.download?.('take.json'),
+            recLoadText: async (text) => { await window.recorder?.loadFromText?.(text); RECUI.refresh(); },
           },
           mountPresetUI: (el) => PRESETS.attachPresetUI(el),
         });
-      } else {
-        // Viewer: strict minimal menu
+      } catch (e) {
+        console.warn('[launcher] host launcher failed to init', e);
+      }
+    } else {
+      // Minimal viewer launcher (no host panels/presets)
+      try {
+        const { initLauncher } = await import('/src/launcher.js');
         initLauncher({
           actions: {
             toggleTheme: () => THEME.toggle(),
@@ -419,67 +385,18 @@
             fill:        () => stage.classList.add('fill'),
             toggleBG:    () => document.body.classList.toggle('transparent'),
           },
-          // no presets in viewer
           mountPresetUI: () => {},
         });
-      }
-
-      launcherOk = true;
-    } catch (e) {
-      console.warn('[launcher] missing or failed, falling back to basic menu', e);
-    }
-
-    /****************************************************************
-     * Fallback floating “Menu” button (only if launcher failed)
-     ****************************************************************/
-    if (!launcherOk) {
-      const menuBtn = document.createElement('button');
-      menuBtn.textContent = 'Menu';
-      menuBtn.id = 'fallbackMenu';
-      menuBtn.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:10000';
-      menuBtn.onclick = () => {
-        const choices = (role === 'host')
-          ? [
-              ['Diagnostics', () => import('/src/diag.js').then(m=>m.toggle())],
-              ['Timeline',    () => import('/src/recorder_ui.js').then(m=>m.toggle())],
-              ['Wizard',      () => import('/src/wizard.js').then(m=>m.toggle())],
-              ['Edit Mode',   () => import('/src/editmode.js').then(m=>m.toggle())],
-              ['Theme',       () => THEME.toggle()],
-              ['Jog Panel',   () => Jog.toggle()],
-              ['Fit',         () => stage.classList.remove('fill')],
-              ['Fill',        () => stage.classList.add('fill')],
-              ['Toggle BG',   () => document.body.classList.toggle('transparent')],
-            ]
-          : [
-              ['Theme',       () => THEME.toggle()],
-              ['Fit',         () => stage.classList.remove('fill')],
-              ['Fill',        () => stage.classList.add('fill')],
-              ['Toggle BG',   () => document.body.classList.toggle('transparent')],
-            ];
-
-        const names = choices.map(([n]) => '• ' + n).join('\n');
-        const picked = prompt('Available actions:\n' + names + '\n\nType the name exactly:');
-        const found = choices.find(([n]) => n.toLowerCase() === String(picked||'').toLowerCase());
-        if (found) found[1]();
-      };
-      document.body.appendChild(menuBtn);
+      } catch {}
     }
 
     /****************************************************************
      * Hotkeys
      ****************************************************************/
     document.addEventListener('keydown', (e)=>{
-      if (e.shiftKey && e.key.toLowerCase()==='t') THEME.toggle(); // Theme
-      if (e.shiftKey && e.key.toLowerCase()==='j') Jog.toggle();   // Jog panel
-      if (role === 'host') {
-        // host may add more hotkeys; viewer gets Theme/Jog only
-      }
+      if (e.shiftKey && e.key.toLowerCase()==='t') THEME.toggle(); // Theme popup (both roles)
+      // no other hotkeys for viewer
     });
-
-    /****************************************************************
-     * Debug helper
-     ****************************************************************/
-    window.FlashAll = () => (window.FLXTest?.smokeFlashAll?.({ delay: 50 }));
   </script>
 </body>
 </html>
