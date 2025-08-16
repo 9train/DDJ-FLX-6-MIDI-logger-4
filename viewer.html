@@ -37,22 +37,24 @@
   </script>
 
   <script type="module">
-    /*************** Viewer-only imports ***************/
+    /****************************************************************
+     * Core imports (viewer-safe)
+     ****************************************************************/
     import { initBoard, consumeInfo as boardConsume, getUnifiedMap } from '/src/board.js';
-    import { connectWS } from '/src/ws.js';
     import * as THEME from '/src/theme.js';
+    import { connectWS } from '/src/ws.js';
 
-    // ----- Role + WS URL resolution (mirrors original index) -----
+    /****************************************************************
+     * Force viewer role + WS URL resolution
+     ****************************************************************/
     let role = 'viewer';
     let wsURL = window.WS_URL;
 
     try {
       const mod = await import('/src/roles.js');
-      if (mod?.getRole) role = 'viewer'; // force viewer page
       if (mod?.getWSURL) wsURL = mod.getWSURL();
     } catch {
       const qs = new URLSearchParams(location.search);
-      role = 'viewer';
       if (!wsURL) {
         const host = location.hostname || 'localhost';
         wsURL = qs.get('ws') || `ws://${host}:` + (qs.get('wsport') || '8787');
@@ -63,19 +65,27 @@
     document.body.dataset.role = role;
     window.FLX_ROLE = role;
 
-    // ----- Init board + Theme (Shift+T toggles Theme) -----
+    /****************************************************************
+     * Init: board + Theme (Shift+T toggles Theme)
+     ****************************************************************/
     await initBoard({ hostId: 'boardHost' });
     THEME.attachThemeDesigner({ svgRoot: document.querySelector('#boardHost svg') });
 
-    // ----- Unified consumer (render into board) -----
+    /****************************************************************
+     * Unified consumer (render into board)
+     ****************************************************************/
     const baseConsume = (info) => boardConsume(info);
     window.consumeInfo = baseConsume;
 
-    // ----- Status helpers -----
+    /****************************************************************
+     * Status helpers
+     ****************************************************************/
     const wsStatusEl = document.getElementById('wsStatus');
     const setWSStatus = (s) => { if (wsStatusEl) wsStatusEl.textContent = 'WS: ' + s; };
 
-    // ----- WebSocket (viewer) -----
+    /****************************************************************
+     * WebSocket (viewer)
+     ****************************************************************/
     const wsClient = connectWS({
       url: wsURL,
       role,
@@ -84,7 +94,9 @@
     });
     window.wsClient = wsClient;
 
-    // ----- Recorder: Load/Play/Stop only -----
+    /****************************************************************
+     * Recorder: Load/Play/Stop only (viewer)
+     ****************************************************************/
     const $ = (id) => document.getElementById(id);
     try {
       const { recorder: FLXRec } = await import('/src/recorder.js');
@@ -101,13 +113,17 @@
       console.warn('[viewer] recorder unavailable', e);
     }
 
-    // ----- Toolbar -----
+    /****************************************************************
+     * Toolbar (viewer)
+     ****************************************************************/
     const stage = document.getElementById('boardHost');
     $('fit')     ?.addEventListener('click',  () => stage.classList.remove('fill'));
     $('fill')    ?.addEventListener('click',  () => stage.classList.add('fill'));
     $('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
 
-    // ----- Minimal launcher (viewer) -----
+    /****************************************************************
+     * Minimal launcher (viewer)
+     ****************************************************************/
     try {
       const { initLauncher } = await import('/src/launcher.js');
       initLauncher({
@@ -121,7 +137,9 @@
       });
     } catch {}
 
-    // ----- Jog Physics (“Tape Mode”) — preserved for viewer -----
+    /****************************************************************
+     * Jog Physics (“Tape Mode”) — preserved for viewer
+     ****************************************************************/
     const Jog = (() => {
       const CFG = { mode:'off', sensitivity:2.5, damping:0.92 };
       const S   = {
@@ -218,11 +236,12 @@
         }
       }
 
-      // Tiny panel you can wire to your own toggle if desired
       return { };
     })();
 
-    // ----- Hotkey: Theme -----
+    /****************************************************************
+     * Hotkey: Theme
+     ****************************************************************/
     document.addEventListener('keydown', (e)=>{
       if (e.shiftKey && e.key.toLowerCase()==='t') THEME.toggle();
     });
