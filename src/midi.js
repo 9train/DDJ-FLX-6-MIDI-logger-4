@@ -103,6 +103,80 @@ export async function initWebMIDI(opts) {
   return makeHandle(access, input, onStatus, log, handler, stateHandler);
 }
 
+// ---- SOP addition: snippet-compatible bootstrap --------------------
+// Mirrors your snippet behavior without changing the main API.
+// Usage (ESM):   import { bootMIDIFromQuery } from './src/midi.js'; await bootMIDIFromQuery();
+// Usage (script): window.FLXBootMIDI(). Returns the same handle as initWebMIDI.
+export async function bootMIDIFromQuery(overrides) {
+  overrides = overrides || {};
+  if (typeof window === 'undefined') {
+    // Keep semantics: fail gracefully outside browser
+    return initWebMIDI({
+      onInfo: function(){},
+      onStatus: function(){},
+      preferredInput: 'DDJ-FLX6',
+      log: false
+    });
+  }
+
+  var search = '';
+  try { search = String(window.location && window.location.search || ''); } catch(e) { search = ''; }
+  var qs = new URLSearchParams(search);
+  var preferred = qs.get('midi') || 'DDJ-FLX6';
+
+  // Resolve callbacks with safe fallbacks:
+  var onInfo = (typeof overrides.onInfo === 'function')
+    ? overrides.onInfo
+    : (function(){
+        try {
+          if (typeof window.consumeInfo === 'function') return window.consumeInfo;
+        } catch(e){}
+        return function(){};
+      })();
+
+  var onStatus = (typeof overrides.onStatus === 'function')
+    ? overrides.onStatus
+    : (function(){
+        try {
+          if (typeof window.setMIDIStatus === 'function') return window.setMIDIStatus;
+        } catch(e){}
+        return function(){};
+      })();
+
+  var logFlag = false;
+  try { logFlag = qs.has('logmidi'); } catch(e) { logFlag = false; }
+
+  try { console.log('[MIDI] starting init with', preferred); } catch(e){}
+
+  try {
+    var handle = await initWebMIDI({
+      onInfo: onInfo,
+      onStatus: onStatus,              // flips UI status like “ready: <name>”
+      preferredInput: preferred,
+      log: logFlag
+    });
+    try { console.log('[MIDI] init OK'); } catch(e){}
+    return handle;
+  } catch (e) {
+    try { console.warn('[MIDI] init failed', e); } catch(err){}
+    try { onStatus('host: off'); } catch(err2){}
+    // Return a noop handle so callers never crash
+    return {
+      get access(){ return null; },
+      get input(){ return null; },
+      listInputs: function(){ return []; },
+      stop: function(){ try { onStatus('stopped'); } catch(e3){} }
+    };
+  }
+}
+
+// Also expose a global for non-module usage
+try {
+  if (typeof window !== 'undefined' && typeof window.FLXBootMIDI !== 'function') {
+    window.FLXBootMIDI = function(overrides){ return bootMIDIFromQuery(overrides); };
+  }
+} catch(e){}
+
 // ---- internals ------------------------------------------------------
 
 function exposeGlobals(access, input, onStatus, log, handler, stateHandler) {
