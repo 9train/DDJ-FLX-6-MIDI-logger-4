@@ -24,6 +24,7 @@ export function getWSURL() {
     const likely = u.hostname.replace(/^visual\./, 'ws.');
     return `wss://${likely}`;
   } catch {
-    return `wss://ws.yourdomain.com`;
+    // SOP edit: use your real domain fallback
+    return `wss://ws.setsoutofcontext.com`;
   }
 }
