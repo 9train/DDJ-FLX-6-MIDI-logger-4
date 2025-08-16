@@ -112,7 +112,6 @@ button:active { transform: translateY(1px); }
 }
 
 /* ===== Motion / transitions ===== */
-/* Smooth rotation for knobs & jogs (CSS transform; we don’t clobber original translate) */
 [id^="trim_"],
 [id^="hi_"],
 [id^="mid_"],
@@ -124,8 +123,6 @@ button:active { transform: translateY(1px); }
   transform-box: fill-box;
   transform-origin: center;
 }
-
-/* Smooth position for faders / tempos / xfader caps when we update x/y attributes */
 [id^="slider_"],
 #xfader,
 #xfader_slider,
@@ -140,7 +137,7 @@ button:active { transform: translateY(1px); }
   stroke-width: 2;
 }
 
-/* ===== FAB (floating launcher) ===== */
+/* ===== FAB / Launcher base styles (safe; viewer won’t import launcher) ===== */
 #fab {
   position: fixed;
   right: 16px;
@@ -178,11 +175,7 @@ button:active { transform: translateY(1px); }
 
 #fabSheet .fab-section { margin-bottom: 12px; }
 #fabSheet .fab-title { font-weight: 600; opacity: .9; margin: 4px 0 6px; }
-#fabSheet .fab-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
+#fabSheet .fab-row { display: flex; flex-wrap: wrap; gap: 8px; }
 #fabSheet button {
   background: var(--panel);
   border: 1px solid var(--panel-border);
@@ -192,60 +185,46 @@ button:active { transform: translateY(1px); }
   cursor: pointer;
 }
 #fabSheet button:hover { filter: brightness(1.12); }
-#fabSheet .fab-upload {
-  display: inline-flex;
-  gap: 8px; align-items: center;
-  margin-top: 8px;
-}
+#fabSheet .fab-upload { display: inline-flex; gap: 8px; align-items: center; margin-top: 8px; }
 #fabSheet input[type="file"] { width: 180px; }
-#fabSheet .fab-presets {
-  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
-}
+#fabSheet .fab-presets { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 /* ===== Group Theming (scoped) ===== */
-/* Applies when the SVG root has .themed (toggled by theme designer) */
 #boardHost svg.themed .g-rail,
 #boardHost svg.themed .g-rail * {
   fill: color-mix(in oklab, var(--rail-fill) calc(100% * var(--group-alpha)), transparent);
   stroke: var(--rail-stroke);
 }
-
 #boardHost svg.themed .g-fader,
 #boardHost svg.themed .g-fader * {
   fill: color-mix(in oklab, var(--fader-fill) calc(100% * var(--group-alpha)), transparent);
   stroke: var(--fader-stroke);
 }
-
 #boardHost svg.themed .g-tempo,
 #boardHost svg.themed .g-tempo * {
   fill: color-mix(in oklab, var(--tempo-fill) calc(100% * var(--group-alpha)), transparent);
   stroke: var(--tempo-stroke);
 }
-
 #boardHost svg.themed .g-xfader,
 #boardHost svg.themed .g-xfader * {
   fill: color-mix(in oklab, var(--xfader-fill) calc(100% * var(--group-alpha)), transparent);
   stroke: var(--xfader-stroke);
 }
-
 #boardHost svg.themed .g-pad,
 #boardHost svg.themed .g-pad * {
   fill: color-mix(in oklab, var(--pad-fill) calc(100% * var(--group-alpha)), transparent);
   stroke: var(--pad-stroke);
 }
-
 #boardHost svg.themed .g-pad-mode,
 #boardHost svg.themed .g-pad-mode * {
   fill: color-mix(in oklab, var(--padmode-fill) calc(100% * var(--group-alpha)), transparent);
   stroke: var(--padmode-stroke);
 }
-
 #boardHost svg.themed .g-knob,
 #boardHost svg.themed .g-knob * {
   fill: color-mix(in oklab, var(--knob-fill) calc(100% * var(--group-alpha)), transparent);
   stroke: var(--knob-stroke);
 }
-
 #boardHost svg.themed .g-knob-notch,
 #boardHost svg.themed .g-knob-notch * {
   fill: color-mix(in oklab, var(--knobnotch-fill) calc(100% * var(--group-alpha)), transparent);
@@ -256,24 +235,25 @@ button:active { transform: translateY(1px); }
 .muted { opacity: 0.5; }
 .hidden { display: none !important; }
 
-/* === Viewer cleanup (append to end) === */
+/* === Viewer cleanup === */
+/* Viewer: hide record + save buttons only (stop/play/load stay) */
 body.viewer #recStart,
-body.viewer #recStop,
-body.viewer #recPlay,
-body.viewer #recSave,
-body.viewer #recLoad,
-body.viewer #fallbackMenu,
+body.viewer #recSave {
+  display: none !important;
+}
+
+/* Viewer: absolutely hide any host-only panels if code tried to show them */
 body.viewer .panel,
 body.viewer [data-panel],
 body.viewer .edit-toolbar,
 body.viewer .wizard,
 body.viewer .diagnostics,
-body.viewer .timeline {
+body.viewer .timeline,
+body.viewer #presetMount,
+body.viewer #fallbackMenu {
   display: none !important;
 }
 
-/* Tidy spacing on the right cluster once items hide */
+/* Layout niceties */
 body.viewer #ui .right { gap: 8px; }
-
-/* Full-viewport stage; Fill toggles via .fill class */
 #boardHost { width: 100vw; height: 100vh; }
