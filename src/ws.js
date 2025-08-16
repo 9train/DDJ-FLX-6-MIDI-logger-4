@@ -2,9 +2,9 @@
 // Drop-in replacement with path probing + room support,
 // while preserving original public behavior and MIDI hooks.
 //
-// Public API (unchanged):
+// Public API (unchanged core, plus optional callback):
 //   connectWS('ws://...', onInfo, onStatus)
-//   connectWS({ url, role, room='default', onInfo, onStatus }) -> client
+//   connectWS({ url, role, room='default', onInfo, onStatus, onMessage }) -> client
 //
 // Returned client exposes:
 //   { url, socket, isAlive(), send(obj), sendMap(arr), close() }
@@ -187,6 +187,10 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
           window.dispatchEvent(evx);
         } catch {}
       }
+
+      // NEW (SOP ADD): surface everything to optional generic handler
+      // This fires AFTER the existing behavior above.
+      try { opts.onMessage && opts.onMessage(parsed); } catch {}
     });
 
     ws.addEventListener('close', ()=>{
