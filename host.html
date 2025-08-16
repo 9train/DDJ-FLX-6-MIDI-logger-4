@@ -133,6 +133,61 @@
     window.addEventListener('flx:map-updated', pushMap);
 
     /****************************************************************
+     * WebMIDI capture (host only) — with device resolver + init logs (SOP)
+     ****************************************************************/
+    // Resolve a real device name before initWebMIDI (case-insensitive, substring ok)
+    async function resolvePreferredMidiName() {
+      try {
+        const qs = new URLSearchParams(location.search);
+        const want = (qs.get('midi') || 'DDJ-FLX6').toLowerCase();
+
+        if (!('requestMIDIAccess' in navigator)) {
+          setMIDIStatus('unsupported');
+          return want; // still return something
+        }
+        const access = await navigator.requestMIDIAccess();
+        const inputs = [...access.inputs.values()];
+        if (!inputs.length) {
+          setMIDIStatus('no devices');
+          return want;
+        }
+        // 1) exact (case-insensitive)
+        let pick = inputs.find(i => i.name.toLowerCase() === want);
+        // 2) substring match
+        if (!pick) pick = inputs.find(i => i.name.toLowerCase().includes(want));
+        // 3) fallback: first device
+        if (!pick) pick = inputs[0];
+
+        console.log('[MIDI] picked input:', pick.name);
+        setMIDIStatus('choosing ' + pick.name);
+        return pick.name;
+      } catch (e) {
+        console.warn('[MIDI] resolve failed', e);
+        return (new URLSearchParams(location.search)).get('midi') || 'DDJ-FLX6';
+      }
+    }
+
+    try {
+      // pick best available device name, honoring ?midi= if provided
+      const preferredName = await resolvePreferredMidiName();
+
+      // === Requested logging wrapper around initWebMIDI ===
+      console.log('[MIDI] starting init');
+      await initWebMIDI({
+        onInfo: (info) => window.consumeInfo(info),
+        preferredInput: preferredName,
+        onStatus: (s) => setMIDIStatus(s),
+        // keep your original behavior for logmidi flag
+        log: (new URLSearchParams(location.search)).has('logmidi')
+      });
+      console.log('[MIDI] init OK');
+      // === end requested logging wrapper ===
+    } catch (e) {
+      console.warn('[MIDI] init failed', e);
+      setMIDIStatus('host: off');
+    }
+
+    /****************************************************************
      * Recorder (full)
      ****************************************************************/
     const $ = (id) => document.getElementById(id);
