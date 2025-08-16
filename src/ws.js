@@ -14,7 +14,12 @@
 // - Viewers dispatch 'flx:remote-map' on map_sync
 // - Normalizes MIDI events and calls FLX_LEARN_HOOK / FLX_MONITOR_HOOK
 // - Adds candidate path probing and reconnection backoff
-// - Adds periodic ping frames and idle-kill safety timer
+// - Adds periodic ping frames and optional idle-kill safety timer
+//
+// Revision for new server (origin-allowed WS bridge, WS-level heartbeat):
+// - Server broadcasts host frames as { type:'info', payload: <whatever host sent> }
+// - Browser auto-pongs to WS ping frames; those pings are not visible to JS
+// - To avoid unnecessary disconnects when idle, IDLE_KILL_MS is disabled by default
 
 const DEFAULT_ROOM = 'default';
 const PATH_CANDIDATES = ['', '/ws', '/socket', '/socket/websocket', '/relay']; // try in order
@@ -22,7 +27,9 @@ const PING_EVERY_MS = 25000;
 const SETTLE_MS = 1200;       // time after 'open' before we consider a path "good"
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 10000;
-const IDLE_KILL_MS = 10000;   // close socket if no messages within ~10s (matches original intent)
+// IMPORTANT: was 10000 (10s). With a WS server that uses protocol ping/pong (not visible to JS),
+// an idle close causes flapping. Keep feature but default to off (0). Set to >0 if you truly want it.
+const IDLE_KILL_MS = 0;
 
 function log(...a){ try{ console.debug('[WS]', ...a);}catch{} }
 
@@ -49,7 +56,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
   let base = (opts?.url || (typeof window!=='undefined' && window.WS_URL) || '').trim();
   if (!base) {
     const host = (typeof location!=='undefined' && location.hostname) || 'localhost';
-    base = (location && location.protocol==='https:' ? 'wss://' : 'ws://') + host + ':8787';
+    base = (typeof location!=='undefined' && location.protocol==='https:' ? 'wss://' : 'ws://') + host + ':8787';
   }
   // strip trailing slash (we’ll add candidates)
   base = base.replace(/\/+$/,'');
@@ -61,7 +68,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
 
   // Timers
   let pingTimer = null;
-  let idleTimer = null;      // idle/heartbeat killer similar to original
+  let idleTimer = null;      // optional idle/heartbeat killer
 
   // Exposed client facade (mutated as we settle/reconnect)
   const client = {
@@ -107,12 +114,14 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
     clearPing();
     pingTimer = setInterval(()=>{
       if (ws.readyState === WebSocket.OPEN) {
+        // JSON ping for older bridges; harmless no-op for your new server
         try { ws.send(JSON.stringify({type:'ping', t:Date.now()})); } catch {}
       }
     }, PING_EVERY_MS);
   }
 
   function bumpIdleKill(ws){
+    if (!IDLE_KILL_MS || IDLE_KILL_MS <= 0) return; // disabled by default to avoid flapping
     clearIdle();
     idleTimer = setTimeout(()=> {
       try { if (ws.readyState !== WebSocket.CLOSED) ws.close(); } catch {}
@@ -125,7 +134,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
 
     ws.addEventListener('open', ()=>{
       setStatus('connected');
-      // Send hello/join immediately — many relays require a fast first frame
+      // Send hello/join immediately — your server expects this shape
       try { ws.send(JSON.stringify({ type:'hello', role })); } catch {}
       try { ws.send(JSON.stringify({ type:'join',  role, room })); } catch {}
       startPing(ws);
@@ -139,20 +148,27 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
       // Try JSON; if server wraps {payload:...}, unwrap; else pass through
       let parsed = null;
       try { parsed = JSON.parse(ev.data); } catch { /* ignore non-JSON frames */ }
-
       if (!parsed) return;
 
-      // Handle MIDI-like envelopes and bare MIDI-like objects
-      // 1) { type:'midi_like', payload:{...} }
-      // 2) Bare MIDI-like objects: { type:'cc'|'noteon'|'noteoff'|'pitch', ... }
-      // 3) Other structured messages (e.g., map_sync)
+      // The new server broadcasts host frames as { type:'info', payload: <original> }
+      // We also support older envelopes { type:'midi_like', payload: {...} }
+      // and bare MIDI-like objects.
       let info = null;
-      if (parsed && parsed.type === 'midi_like' && parsed.payload) {
+
+      // 1) Explicit new-server envelope
+      if (parsed && parsed.type === 'info' && 'payload' in parsed) {
         info = parsed.payload;
-      } else if (looksLikeMidi(parsed)) {
+      }
+      // 2) Legacy midi_like envelope
+      else if (parsed && parsed.type === 'midi_like' && parsed.payload) {
+        info = parsed.payload;
+      }
+      // 3) Bare MIDI-like objects
+      else if (looksLikeMidi(parsed)) {
         info = parsed;
-      } else if (parsed && typeof parsed === 'object' && 'payload' in parsed) {
-        // generic unwrap (for bridges that wrap everything)
+      }
+      // 4) Generic unwrap as safety net
+      else if (parsed && typeof parsed === 'object' && 'payload' in parsed) {
         info = parsed.payload;
       }
 
@@ -205,7 +221,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
     try { ws = new WebSocket(url); } catch { /* try next */ tryOne(index+1, onDone); return; }
 
     ws.addEventListener('open', ()=>{
-      // Some relays want the first frame right away
+      // some relays want the first frame right away
       try { ws.send(JSON.stringify({ type:'hello', role })); } catch {}
       // consider it viable if it stays open for SETTLE_MS
       settleTimer = setTimeout(()=>{
