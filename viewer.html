@@ -112,6 +112,53 @@
     window.consumeInfo = baseConsume;
 
     /****************************************************************
+     * MINI NORMALIZER (SOP addition)
+     * Normalizes incoming WS info shapes before rendering.
+     * Mirrors your earlier "MIDI shape normalizer" without imports.
+     ****************************************************************/
+    function normalizeInfo(x) {
+      if (!x || typeof x !== 'object') return x;
+
+      // Unwrap wrapper types: { type:'midi_like'|'midi'|'info', payload:{...} }
+      if (x.type && typeof x.payload === 'object') {
+        const t = String(x.type).toLowerCase();
+        if (t === 'midi_like' || t === 'midi' || t === 'info') {
+          x = x.payload;
+        }
+      }
+
+      const info = { ...x };
+      const t = String(info.type || '').toLowerCase();
+
+      // CC normalization
+      if (t === 'cc') {
+        const d1 = info.d1 ?? info.controller ?? 0;
+        const d2 = info.d2 ?? info.value ?? 0;
+        info.controller = d1;
+        info.value = d2;
+        info.d1 = d1;
+        info.d2 = d2;
+        info.type = 'cc';
+        return info;
+      }
+
+      // Note on/off normalization (common in maps)
+      if (t === 'noteon' || t === 'noteoff') {
+        const d1 = info.d1 ?? info.note ?? 0;
+        const d2 = info.d2 ?? info.vel ?? info.velocity ?? 0;
+        info.note = d1;
+        info.velocity = d2;
+        info.d1 = d1;
+        info.d2 = d2;
+        info.type = t;
+        return info;
+      }
+
+      // Pass-through other event types unchanged
+      return info;
+    }
+
+    /****************************************************************
      * Status helpers
      ****************************************************************/
     const wsStatusEl = document.getElementById('wsStatus');
@@ -119,11 +166,12 @@
 
     /****************************************************************
      * WebSocket (viewer)
+     * SOP CHANGE: onInfo now normalizes before consuming.
      ****************************************************************/
     const wsClient = connectWS({
       url: wsURL,
       role,
-      onInfo: (info) => window.consumeInfo(info),
+      onInfo: (info) => window.consumeInfo(normalizeInfo(info)), // <-- SOP change
       onStatus: (s) => setWSStatus(s),
     });
     window.wsClient = wsClient;
