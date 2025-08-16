@@ -1,23 +1,36 @@
-# fly.toml app configuration file generated for ddj-flx-6-midi-logger-4 on 2025-08-16T00:45:55Z
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
+# fly.toml — single-port HTTP+WS deployment for your app
+# Replace the app name below with your chosen Fly app name if different.
+app = "flx6-ws"
 
-app = 'ddj-flx-6-midi-logger-4'
-primary_region = 'ewr'
-
+# Build using the Dockerfile in the repo root (adjust path if yours differs)
 [build]
+  dockerfile = "Dockerfile"
 
+# Non-secret environment vars (overridable in the dashboard)
+[env]
+  NODE_ENV = "production"
+  # SINGLE_PORT=1 makes WS share the HTTP server/port (supported by your server code)
+  SINGLE_PORT = "1"
+  # Optionally set a stricter origin for WS connects (set or override in Secrets if you prefer)
+  # ALLOWED_ORIGIN = "https://visual.yourdomain.com"
+
+# Primary HTTP service. WebSocket upgrades will flow through here automatically.
 [http_service]
-  internal_port = 3000
+  internal_port = 8080
   force_https = true
-  auto_stop_machines = 'stop'
+  auto_stop_machines = false
   auto_start_machines = true
-  min_machines_running = 0
-  processes = ['app']
+  min_machines_running = 1
 
-[[vm]]
-  memory = '1gb'
-  cpu_kind = 'shared'
-  cpus = 1
-  memory_mb = 1024
+  # Optional soft concurrency hints; adjust to taste
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 500
+    soft_limit = 300
+
+  # Health checks hit your /healthz endpoint
+  [[http_service.checks]]
+    interval = "10s"
+    timeout  = "2s"
+    method   = "GET"
+    path     = "/healthz"
