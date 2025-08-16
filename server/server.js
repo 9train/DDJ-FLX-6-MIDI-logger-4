@@ -36,9 +36,10 @@ app.use('/assets', express.static(path.join(__dirname, '..', 'assets')));
 app.get('/favicon.ico', (_req, res) => res.sendStatus(204));
 
 const server = http.createServer(app);
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Web server at http://localhost:${PORT}`);
-});
+
+// --- SOP CHANGE: listen using process.env.PORT (server variant)
+const port = process.env.PORT || 8080;
+server.listen(port, () => console.log('WS up on', port));
 
 // ---- WebSocket server
 const wss = new WebSocketServer({ port: WSPORT }, () => {
