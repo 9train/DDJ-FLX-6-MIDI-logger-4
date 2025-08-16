@@ -1,3 +1,5 @@
+# fly.toml
+
 app = "ddj-flx-6-midi-logger-4"
 
 [build]
@@ -7,18 +9,31 @@ app = "ddj-flx-6-midi-logger-4"
   NODE_ENV = "production"
   SINGLE_PORT = "1"
 
+# We keep your newer-style [http_service] (from the original)
+# and merge in the explicit 80/443 handler blocks + keep-alive knobs.
 [http_service]
-  internal_port = 8080
-  force_https = true
-  auto_start_machines = true
-  auto_stop_machines = false
-  min_machines_running = 1
+  internal_port = 8080          # keep original app port
+  force_https = true            # keep original
+  auto_start_machines = true    # keep original
+  auto_stop_machines  = false   # keep original
+  min_machines_running = 1      # keep original
 
+  # Keep your original concurrency (300/500) to avoid behavior change.
   [http_service.concurrency]
     type = "connections"
     soft_limit = 300
     hard_limit = 500
 
+  # Explicit port handler mappings (merged from your examples)
+  [[http_service.ports]]
+    port = 80
+    handlers = ["http"]
+
+  [[http_service.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  # Health check from your original
   [[http_service.checks]]
     interval = "10s"
     timeout  = "2s"
