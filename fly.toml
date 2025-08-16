@@ -1,0 +1,36 @@
+# fly.toml — single-port HTTP+WS deployment for your app
+# Replace the app name below with your chosen Fly app name if different.
+app = "flx6-ws"
+
+# Build using the Dockerfile in the repo root (adjust path if yours differs)
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret environment vars (overridable in the dashboard)
+[env]
+  NODE_ENV = "production"
+  # SINGLE_PORT=1 makes WS share the HTTP server/port (supported by your server code)
+  SINGLE_PORT = "1"
+  # Optionally set a stricter origin for WS connects (set or override in Secrets if you prefer)
+  # ALLOWED_ORIGIN = "https://visual.yourdomain.com"
+
+# Primary HTTP service. WebSocket upgrades will flow through here automatically.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # Optional soft concurrency hints; adjust to taste
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 500
+    soft_limit = 300
+
+  # Health checks hit your /healthz endpoint
+  [[http_service.checks]]
+    interval = "10s"
+    timeout  = "2s"
+    method   = "GET"
+    path     = "/healthz"
