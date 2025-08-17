@@ -1,312 +1,279 @@
-/****************************************************************
- * FLX6 Viewer Bootstrap (module file)
- * - Replaces the inline <script type="module"> block in viewer.html
- * - Eliminates HTML-in-JS parse issues and avoids name collisions
- * - Preserves all OG behavior
- ****************************************************************/
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>FLX6 Visualizer — Viewer</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="/styles.css" />
 
-import { initBoard, consumeInfo as boardConsume, getUnifiedMap } from '/src/board.js';
-import * as THEME from '/src/theme.js';
-import { connectWS } from '/src/ws.js';
-import { getWSURL } from '/src/roles.js';
+  <!-- Force your actual WS relay (override any guessing) -->
+  <script>
+    window.WS_URL = "wss://ws.setsoutofcontext.com";
+    // If you ever want to forbid auto-guessing from roles.js, set WS_FORCE = true
+    // window.WS_FORCE = true;
+  </script>
 
-/****************************************************************
- * Role + Body class
- ****************************************************************/
-const ROLE = 'viewer';
-document.body.classList.add(ROLE);
-document.body.dataset.role = ROLE;
-window.FLX_ROLE = ROLE;
+  <!-- Viewer-only UI trim: keep Load/Play/Stop, hide host tooling -->
+  <style>
+    body.viewer #recStart,
+    body.viewer #recSave { display: none !important; }
 
-/****************************************************************
- * Init: board + Theme (Shift+T toggles Theme)
- ****************************************************************/
-await initBoard({ hostId: 'boardHost' });
-THEME.attachThemeDesigner({ svgRoot: document.querySelector('#boardHost svg') });
+    /* Hide host-only panels/menus/timelines if anything tries to inject them */
+    body.viewer .panel,
+    body.viewer [data-panel],
+    body.viewer .wizard,
+    body.viewer .diagnostics,
+    body.viewer .timeline { display: none !important; }
 
-/****************************************************************
- * Unified consumer (render into board)
- ****************************************************************/
-const baseConsume = (info) => boardConsume(info);
-window.consumeInfo = baseConsume;
+    /* Stage sizing; .fill toggled by the Fill button */
+    #boardHost { width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body class="viewer">
+  <!-- Top toolbar -->
+  <div id="ui">
+    <div class="left" style="display:flex;gap:8px;align-items:center;">
+      <button id="fit" title="Fit SVG inside window">Fit</button>
+      <button id="fill" title="Fill the frame (good for OBS)">Fill</button>
+      <button id="toggleBG" title="Toggle transparent background">Toggle BG</button>
+    </div>
+    <div class="right" style="display:flex;gap:10px;align-items:center;">
+      <span id="wsStatus">WS: ⏳</span>
+      <span id="midiStatus">MIDI: viewer</span>
+      <!-- Viewer recorder controls (no record/save) -->
+      <button id="recStop" title="Stop playback">Stop</button>
+      <button id="recPlay" title="Play loaded recording">Play</button>
+      <input id="recLoad" type="file" accept=".json,.txt" title="Load a recording" />
+    </div>
+  </div>
 
-/****************************************************************
- * MINI NORMALIZER
- * Normalizes incoming WS info shapes before rendering.
- ****************************************************************/
-function normalizeInfo(x) {
-  if (!x || typeof x !== 'object') return x;
+  <!-- Board stage -->
+  <div id="boardHost"></div>
 
-  // Unwrap wrapper types: { type:'midi_like'|'midi'|'info', payload:{...} }
-  if (x.type && typeof x.payload === 'object') {
-    const t = String(x.type).toLowerCase();
-    if (t === 'midi_like' || t === 'midi' || t === 'info') {
-      x = x.payload;
-    }
-  }
+  <!-- === Viewer core (inline module) — UI, board, theme, recorder, jog === -->
+  <script type="module">
+    import { initBoard, consumeInfo as boardConsume, getUnifiedMap } from '/src/board.js';
+    import * as THEME from '/src/theme.js';
 
-  const info = { ...x };
-  const t = String(info.type || '').toLowerCase();
+    // Role + body flags
+    const ROLE = 'viewer';
+    document.body.classList.add(ROLE);
+    document.body.dataset.role = ROLE;
+    window.FLX_ROLE = ROLE;
 
-  // CC normalization
-  if (t === 'cc') {
-    const d1 = info.d1 ?? info.controller ?? 0;
-    const d2 = info.d2 ?? info.value ?? 0;
-    info.controller = d1;
-    info.value = d2;
-    info.d1 = d1;
-    info.d2 = d2;
-    info.type = 'cc';
-    return info;
-  }
+    // Init board + Theme (Shift+T toggles theme)
+    await initBoard({ hostId: 'boardHost' });
+    THEME.attachThemeDesigner({ svgRoot: document.querySelector('#boardHost svg') });
 
-  // Note on/off normalization
-  if (t === 'noteon' || t === 'noteoff') {
-    const d1 = info.d1 ?? info.note ?? 0;
-    const d2 = info.d2 ?? info.vel ?? info.velocity ?? 0;
-    info.note = d1;
-    info.velocity = d2;
-    info.d1 = d1;
-    info.d2 = d2;
-    info.type = t;
-    return info;
-  }
-
-  // Passthrough for other types
-  return info;
-}
-
-/****************************************************************
- * Status helpers
- ****************************************************************/
-const wsStatusEl = document.getElementById('wsStatus');
-window.setWSStatus = (s) => { if (wsStatusEl) wsStatusEl.textContent = 'WS: ' + s; };
-
-/****************************************************************
- * WebSocket (viewer) — isolated, no collisions
- * - Respects WS_FORCE: if true and WS_URL present, do not override
- ****************************************************************/
-function resolveWSURL() {
-  let wsURL = window.WS_URL;
-
-  try {
-    // If WS_FORCE is true, we do NOT allow roles.js to change the URL.
-    if (!(window.WS_FORCE && window.WS_URL)) {
-      const u = getWSURL?.();
-      if (u) wsURL = u;
-    }
-  } catch {
-    // Last-resort derivation using querystring or default localhost
-    const qs = new URLSearchParams(location.search);
-    if (!wsURL) {
-      const host = location.hostname || 'localhost';
-      wsURL = qs.get('ws') || `ws://${host}:` + (qs.get('wsport') || '8787');
-    }
-  }
-  return wsURL;
-}
-
-const qs   = new URLSearchParams(location.search);
-const room = qs.get('room') || 'default';
-
-const wsClient = connectWS({
-  url: resolveWSURL(),
-  role: ROLE,
-  room,
-  onInfo: (info) => window.consumeInfo?.(normalizeInfo(info)),
-  onStatus: (s)  => window.setWSStatus?.(s),
-});
-
-// Expose for console/diagnostics
-window.wsClient = wsClient;
-
-/****************************************************************
- * Probe responder (viewer)
- * - Listens for {type:'probe', id} and replies {type:'probe:ack', id}
- ****************************************************************/
-function installProbeAck(ws) {
-  if (!ws) return;
-  if (ws.__probeAckInstalled) return;
-  ws.__probeAckInstalled = true;
-
-  ws.addEventListener('message', (e) => {
-    let m; try { m = JSON.parse(e.data); } catch {}
-    if (m?.type === 'probe' && m.id) {
-      try { ws.send(JSON.stringify({ type:'probe:ack', id: m.id })); } catch {}
-    }
-  });
-}
-
-if (window.wsClient?.socket) installProbeAck(window.wsClient.socket);
-window.addEventListener('flx:ws-open', () => {
-  if (window.wsClient?.socket) installProbeAck(window.wsClient.socket);
-});
-
-/****************************************************************
- * Recorder: Load/Play/Stop only (viewer)
- ****************************************************************/
-const $ = (id) => document.getElementById(id);
-try {
-  const { recorder: FLXRec } = await import('/src/recorder.js');
-  window.recorder = FLXRec;
-
-  $('recStop') ?.addEventListener('click', () => FLXRec.stop());
-  $('recPlay') ?.addEventListener('click', () => FLXRec.play({ speed: 1.0, loop: false }));
-  $('recLoad') ?.addEventListener('change', async (e) => {
-    const file = e.target.files?.[0]; if (!file) return;
-    const text = await file.text();
-    await FLXRec.loadFromText(text);
-  });
-} catch (e) {
-  console.warn('[viewer] recorder unavailable', e);
-}
-
-/****************************************************************
- * Toolbar (viewer)
- ****************************************************************/
-const stage = document.getElementById('boardHost');
-$('fit')     ?.addEventListener('click',  () => stage.classList.remove('fill'));
-$('fill')    ?.addEventListener('click',  () => stage.classList.add('fill'));
-$('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
-
-/****************************************************************
- * Minimal launcher (viewer) + post-init scrub
- ****************************************************************/
-try {
-  const { initLauncher } = await import('/src/launcher.js');
-  const launcher = initLauncher({
-    actions: {
-      toggleTheme: () => THEME.toggle(),
-      fit:         () => stage.classList.remove('fill'),
-      fill:        () => stage.classList.add('fill'),
-      toggleBG:    () => document.body.classList.toggle('transparent'),
-    },
-    mountPresetUI: () => {},
-  });
-
-  // Hard scrub any host leftovers if launcher still injected them
-  const kill = (sel) => document.querySelectorAll(sel).forEach(el => el.remove());
-  // common structural hooks
-  kill('#launcher .section-panels, .launcher .section-panels');
-  kill('#launcher .section--presets, .launcher .section--presets, #launcher .section-presets, .launcher .section-presets');
-  // buttons by data-action (if present)
-  kill('[data-action="toggleDiag"], [data-action="toggleTimeline"], [data-action="toggleWizard"], [data-action="toggleEdit"]');
-  // any buttons that literally say Rec or Save (fallback)
-  Array.from(document.querySelectorAll('#launcher button, .launcher button')).forEach(btn=>{
-    const t = (btn.textContent || '').trim().toLowerCase();
-    if (t === 'rec' || t === 'save') btn.remove();
-  });
-  // if a leftover header "Presets" exists, remove it
-  Array.from(document.querySelectorAll('#launcher h2, .launcher h2')).forEach(h=>{
-    if ((h.textContent||'').trim().toLowerCase()==='presets') h.remove();
-  });
-} catch {}
-
-/****************************************************************
- * Jog Physics (“Tape Mode”) — preserved for viewer
- ****************************************************************/
-const Jog = (() => {
-  const CFG = { mode:'off', sensitivity:2.5, damping:0.92 };
-  const S   = {
-    L:{ angle:0, vel:0, lastVal:null, lastKey:null, el:null },
-    R:{ angle:0, vel:0, lastVal:null, lastKey:null, el:null },
-    anim:null
-  };
-
-  function toIdVariants(id){
-    const v=String(id||''); const a=new Set([v]);
-    if (v.includes('_x5F_')) a.add(v.replace(/_x5F_/g,'_'));
-    if (v.includes('_'))     a.add(v.replace(/_/g,'_x5F_'));
-    return [...a];
-  }
-  function getEl(id){
-    for (const vid of toIdVariants(id)) {
-      const el = document.getElementById(vid);
-      if (el) return el;
-    }
-    return null;
-  }
-  function resolveJogEls(){ S.L.el=getEl('jog_L'); S.R.el=getEl('jog_R'); }
-  resolveJogEls();
-
-  function applyRotation(el, ang){
-    if (!el) return;
-    try {
-      el.style.transformBox = 'fill-box';
-      el.style.transformOrigin = 'center';
-      el.style.transform = `rotate(${ang}deg)`;
-    } catch {}
-    try {
-      const bb=el.getBBox(); const cx=bb.x+bb.width/2, cy=bb.y+bb.height/2;
-      el.setAttribute('transform', `rotate(${ang} ${cx} ${cy})`);
-    } catch {}
-  }
-
-  function tick(){
-    S.anim = requestAnimationFrame(tick);
-    if (CFG.mode !== 'tape') return;
-    ['L','R'].forEach(side=>{
-      const j=S[side]; if (!j.el) return;
-      j.angle += j.vel;
-      j.vel   *= CFG.damping;
-      if (Math.abs(j.vel) < 0.001) j.vel = 0;
-      applyRotation(j.el, j.angle);
-    });
-  }
-
-  if (!window.__JOG_WRAP__) {
-    window.__JOG_WRAP__ = true;
-    const orig = window.consumeInfo;
-    window.consumeInfo = (info) => { try { onEvent(info); } catch {} return orig(info); };
-  }
-
-  function onEvent(info){
-    if (CFG.mode === 'off') return;
-
-    const mm = getUnifiedMap?.() || [];
-    const type = (info.type||'').toLowerCase();
-    const code = type === 'cc' ? (info.controller ?? info.d1) : info.d1;
-    const key  = `${type}:${info.ch}:${code}`;
-
-    const hits = mm.filter(m =>
-      (m.key && m.key === key && m.target) ||
-      (!m.key && m.type === type && m.ch === info.ch && m.code === (info.controller ?? info.d1) && m.target)
-    );
-
-    let side = null;
-    if (hits.some(h => (h.target||'').toLowerCase().includes('jog_l'))) side = 'L';
-    if (hits.some(h => (h.target||'').toLowerCase().includes('jog_r'))) side = side || 'R';
-    if (!side) return;
-
-    const j = S[side]; if (!j.el) resolveJogEls();
-
-    if (CFG.mode === 'absolute') {
-      const angle = (info.value ?? info.d2 ?? 0) * (360/127);
-      j.angle = angle; applyRotation(j.el, j.angle); return;
-    }
-
-    if (CFG.mode === 'tape') {
-      const v = (info.value ?? info.d2 ?? 0) | 0;
-      if (j.lastKey !== key) j.lastVal = null;
-      let d;
-      if (j.lastVal == null) d = 0;
-      else {
-        d = v - j.lastVal;
-        if (d > 64) d -= 128;
-        if (d < -64) d += 128;
+    // Minimal normalizer for incoming info
+    function normalizeInfo(x) {
+      if (!x || typeof x !== 'object') return x;
+      if (x.type && typeof x.payload === 'object') {
+        const t = String(x.type).toLowerCase();
+        if (t === 'midi_like' || t === 'midi' || t === 'info') x = x.payload;
       }
-      j.lastVal = v; j.lastKey = key;
-      j.vel += d * 2.5;
-      if (!S.anim) tick();
+      const info = { ...x };
+      const t = String(info.type || '').toLowerCase();
+
+      if (t === 'cc') {
+        const d1 = info.d1 ?? info.controller ?? 0;
+        const d2 = info.d2 ?? info.value ?? 0;
+        info.controller = d1; info.value = d2; info.d1 = d1; info.d2 = d2; info.type = 'cc';
+        return info;
+      }
+      if (t === 'noteon' || t === 'noteoff') {
+        const d1 = info.d1 ?? info.note ?? 0;
+        const d2 = info.d2 ?? info.vel ?? info.velocity ?? 0;
+        info.note = d1; info.velocity = d2; info.d1 = d1; info.d2 = d2; info.type = t;
+        return info;
+      }
+      return info;
     }
-  }
+    window.normalizeInfo = normalizeInfo;
 
-  return { };
-})();
+    // Unified consumer the WS bootstrap will call
+    const baseConsume = (info) => boardConsume(info);
+    window.consumeInfo = baseConsume;
 
-/****************************************************************
- * Hotkey: Theme
- ****************************************************************/
-document.addEventListener('keydown', (e)=>{
-  if (e.shiftKey && e.key.toLowerCase()==='t') THEME.toggle();
-});
+    // Status helper
+    const wsStatusEl = document.getElementById('wsStatus');
+    window.setWSStatus = (s) => { if (wsStatusEl) wsStatusEl.textContent = 'WS: ' + s; };
+
+    // Recorder: Load/Play/Stop only (viewer)
+    const $ = (id) => document.getElementById(id);
+    try {
+      const { recorder: FLXRec } = await import('/src/recorder.js');
+      window.recorder = FLXRec;
+      $('recStop')  ?.addEventListener('click', () => FLXRec.stop());
+      $('recPlay')  ?.addEventListener('click', () => FLXRec.play({ speed: 1.0, loop: false }));
+      $('recLoad')  ?.addEventListener('change', async (e) => {
+        const file = e.target.files?.[0]; if (!file) return;
+        const text = await file.text();
+        await FLXRec.loadFromText(text);
+      });
+    } catch (e) {
+      console.warn('[viewer] recorder unavailable', e);
+    }
+
+    // Toolbar
+    const stage = document.getElementById('boardHost');
+    $('fit')     ?.addEventListener('click',  () => stage.classList.remove('fill'));
+    $('fill')    ?.addEventListener('click',  () => stage.classList.add('fill'));
+    $('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
+
+    // Minimal launcher + scrub of any host leftovers
+    try {
+      const { initLauncher } = await import('/src/launcher.js');
+      const launcher = initLauncher({
+        actions: {
+          toggleTheme: () => THEME.toggle(),
+          fit:         () => stage.classList.remove('fill'),
+          fill:        () => stage.classList.add('fill'),
+          toggleBG:    () => document.body.classList.toggle('transparent'),
+        },
+        mountPresetUI: () => {},
+      });
+      const kill = (sel) => document.querySelectorAll(sel).forEach(el => el.remove());
+      kill('#launcher .section-panels, .launcher .section-panels');
+      kill('#launcher .section--presets, .launcher .section--presets, #launcher .section-presets, .launcher .section-presets');
+      kill('[data-action="toggleDiag"], [data-action="toggleTimeline"], [data-action="toggleWizard"], [data-action="toggleEdit"]');
+      Array.from(document.querySelectorAll('#launcher button, .launcher button')).forEach(btn=>{
+        const t = (btn.textContent || '').trim().toLowerCase();
+        if (t === 'rec' || t === 'save') btn.remove();
+      });
+      Array.from(document.querySelectorAll('#launcher h2, .launcher h2')).forEach(h=>{
+        if ((h.textContent||'').trim().toLowerCase()==='presets') h.remove();
+      });
+    } catch {}
+
+    // Jog Physics (“Tape Mode”) — preserved
+    const Jog = (() => {
+      const CFG = { mode:'off', sensitivity:2.5, damping:0.92 };
+      const S   = {
+        L:{ angle:0, vel:0, lastVal:null, lastKey:null, el:null },
+        R:{ angle:0, vel:0, lastVal:null, lastKey:null, el:null },
+        anim:null
+      };
+      function toIdVariants(id){
+        const v=String(id||''); const a=new Set([v]);
+        if (v.includes('_x5F_')) a.add(v.replace(/_x5F_/g,'_'));
+        if (v.includes('_'))     a.add(v.replace(/_/g,'_x5F_'));
+        return [...a];
+      }
+      function getEl(id){
+        for (const vid of toIdVariants(id)) {
+          const el = document.getElementById(vid);
+          if (el) return el;
+        }
+        return null;
+      }
+      function resolveJogEls(){ S.L.el=getEl('jog_L'); S.R.el=getEl('jog_R'); }
+      resolveJogEls();
+      function applyRotation(el, ang){
+        if (!el) return;
+        try {
+          el.style.transformBox = 'fill-box';
+          el.style.transformOrigin = 'center';
+          el.style.transform = `rotate(${ang}deg)`;
+        } catch {}
+        try {
+          const bb=el.getBBox(); const cx=bb.x+bb.width/2, cy=bb.y+bb.height/2;
+          el.setAttribute('transform', `rotate(${ang} ${cx} ${cy})`);
+        } catch {}
+      }
+      function tick(){
+        S.anim = requestAnimationFrame(tick);
+        if (CFG.mode !== 'tape') return;
+        ['L','R'].forEach(side=>{
+          const j=S[side]; if (!j.el) return;
+          j.angle += j.vel;
+          j.vel   *= CFG.damping;
+          if (Math.abs(j.vel) < 0.001) j.vel = 0;
+          applyRotation(j.el, j.angle);
+        });
+      }
+      if (!window.__JOG_WRAP__) {
+        window.__JOG_WRAP__ = true;
+        const orig = window.consumeInfo;
+        window.consumeInfo = (info) => { try { onEvent(info); } catch {} return orig(info); };
+      }
+      function onEvent(info){
+        if (CFG.mode === 'off') return;
+        const mm = getUnifiedMap?.() || [];
+        const type = (info.type||'').toLowerCase();
+        const code = type === 'cc' ? (info.controller ?? info.d1) : info.d1;
+        const key  = `${type}:${info.ch}:${code}`;
+        const hits = mm.filter(m =>
+          (m.key && m.key === key && m.target) ||
+          (!m.key && m.type === type && m.ch === info.ch && m.code === (info.controller ?? info.d1) && m.target)
+        );
+        let side = null;
+        if (hits.some(h => (h.target||'').toLowerCase().includes('jog_l'))) side = 'L';
+        if (hits.some(h => (h.target||'').toLowerCase().includes('jog_r'))) side = side || 'R';
+        if (!side) return;
+        const j = S[side]; if (!j.el) resolveJogEls();
+        if (CFG.mode === 'absolute') {
+          const angle = (info.value ?? info.d2 ?? 0) * (360/127);
+          j.angle = angle; applyRotation(j.el, j.angle); return;
+        }
+        if (CFG.mode === 'tape') {
+          const v = (info.value ?? info.d2 ?? 0) | 0;
+          if (j.lastKey !== key) j.lastVal = null;
+          let d;
+          if (j.lastVal == null) d = 0;
+          else {
+            d = v - j.lastVal;
+            if (d > 64) d -= 128;
+            if (d < -64) d += 128;
+          }
+          j.lastVal = v; j.lastKey = key;
+          j.vel += d * 2.5;
+          if (!S.anim) tick();
+        }
+      }
+      return {};
+    })();
+
+    // Hotkey: Shift+T toggles theme
+    document.addEventListener('keydown', (e)=>{
+      if (e.shiftKey && e.key.toLowerCase()==='t') THEME.toggle();
+    });
+  </script>
+
+  <!-- === WS bootstrap isolated in external module (prevents HTML-in-JS parse issues) === -->
+  <script type="module" src="/src/bootstrap-viewer.js"></script>
+
+  <!-- === Fallback map loader (late joiner safety): apply file map if WS replay hasn't arrived === -->
+  <script>
+    (function fallbackMapBootstrap(){
+      const START = Date.now();
+      const TRY_AFTER_MS = 1200;
+      function hasMap() {
+        try {
+          if (Array.isArray(window.__currentMap) && window.__currentMap.length) return true;
+          const cached = localStorage.getItem('learned_map');
+          if (cached) {
+            const m = JSON.parse(cached);
+            if (Array.isArray(m) && m.length) { window.__currentMap = m; return true; }
+          }
+        } catch {}
+        return false;
+      }
+      setTimeout(async () => {
+        if (hasMap()) return; // map already applied by WS
+        try {
+          const r = await fetch('/learned_map.json', { cache: 'no-store' });
+          if (!r.ok) return;
+          const map = await r.json();
+          if (Array.isArray(map) && map.length) {
+            window.__currentMap = map;
+            try { localStorage.setItem('learned_map', JSON.stringify(map)); } catch {}
+            window.dispatchEvent(new CustomEvent('flx:remote-map', { detail: map }));
+            console.log('[fallback-map] applied', map.length, 'entries after', Date.now()-START, 'ms');
+          }
+        } catch {}
+      }, TRY_AFTER_MS);
+    })();
+  </script>
+</body>
+</html>
