@@ -7,12 +7,20 @@
 // NEW (SOP): Adds probe fan-out & ack collection per room
 //   - Host -> {type:'probe', id}  => server broadcasts to viewers and summarizes
 //   - Viewer -> {type:'probe:ack', id} => server counts unique acks per probe
+//
+// NEW (SOP): Durable room maps with immediate replay to new viewers
+//   - Disk persistence to MAP_FILE (env) with debounce saves
+//   - Stable key hashing for change detection (djb2 of canonical JSON)
+//   - Supports {type:'map:set'},{type:'map:ensure'},{type:'map:get'}
+//   - Sends {type:'map:sync', map, key} to viewers (raw, not wrapped)
 
 import path from 'path';
 import express from 'express';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
+import fsp from 'fs/promises';
 import { create as createHID } from './hid.js';
 
 // ---- __filename / __dirname equivalents in ESM
@@ -25,6 +33,9 @@ const HOST        = process.env.HOST || '0.0.0.0'; // bind to all interfaces
 const WSPORT_ENV  = process.env.WSPORT;            // preserve original env override
 const MIDI_INPUT  = process.env.MIDI_INPUT  || ''; // e.g., "DDJ-FLX6"
 const MIDI_OUTPUT = process.env.MIDI_OUTPUT || ''; // unused here, kept for future
+
+// Map persistence (SOP)
+const MAP_FILE = process.env.MAP_FILE || './data/room_maps.json';
 
 // Fly-friendly single port mode: attach WS to the HTTP server (no extra listener).
 // Activates only when explicitly enabled; preserves original behavior otherwise.
@@ -110,8 +121,8 @@ function broadcast(obj) {
   }
 }
 
-// === Rooms with presence + lastMap ==========================================
-// roomName -> { hosts:Set<WebSocket>, viewers:Set<WebSocket>, lastMap:Array|null }
+// === Rooms with presence + lastMap (+ lastKey) ==============================
+// roomName -> { hosts:Set<WebSocket>, viewers:Set<WebSocket>, lastMap:Array|null, lastKey:string|null }
 const rooms = new Map();
 
 function getRoom(roomName) {
@@ -120,6 +131,7 @@ function getRoom(roomName) {
       hosts:   new Set(),
       viewers: new Set(),
       lastMap: null,
+      lastKey: null,
     });
   }
   return rooms.get(roomName);
@@ -139,9 +151,25 @@ function broadcastPresence(roomName) {
   }
 }
 
-// Keep viewer-scoped helper used by host → viewers info relay (unchanged)
-function broadcastToViewers(room, payload, exceptWs) {
+// Keep viewer-scoped helper used by host → viewers info relay (unchanged wrapper)
+function broadcastToViewers_wrapped(room, payload, exceptWs) {
+  // This preserves the original "wrap as {type:'info', payload}" behavior
   const msg = JSON.stringify({ type: 'info', payload, room });
+  for (const client of wss.clients) {
+    if (
+      client !== exceptWs &&
+      client.readyState === WebSocket.OPEN &&
+      client.room === room &&
+      client.role === 'viewer'
+    ) {
+      try { client.send(msg); } catch {}
+    }
+  }
+}
+
+// NEW (SOP): raw viewer broadcast (no wrapping) for map:sync, etc.
+function broadcastToViewers_raw(room, obj, exceptWs) {
+  const msg = JSON.stringify(obj);
   for (const client of wss.clients) {
     if (
       client !== exceptWs &&
@@ -159,13 +187,64 @@ function send(ws, obj) {
   try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); } catch {}
 }
 
+// === NEW (SOP): Map persistence helpers =====================================
+function keyOf(mapArr){
+  // stable hash (djb2) of the canonical JSON
+  const s = JSON.stringify(mapArr);
+  let h=5381; for (let i=0;i<s.length;i++) h = ((h<<5)+h) ^ s.charCodeAt(i);
+  return String(h>>>0);
+}
+
+async function loadMapsFromDisk(){
+  try {
+    const txt = await fsp.readFile(MAP_FILE, 'utf8');
+    const j = JSON.parse(txt || '{}');
+    const loadedRooms = Object.keys(j);
+    for (const roomName of loadedRooms) {
+      const arr = j[roomName];
+      if (Array.isArray(arr) && arr.length) {
+        const r = getRoom(roomName);
+        r.lastMap = arr;
+        r.lastKey = keyOf(arr);
+      }
+    }
+    console.log('[MAP] loaded rooms from disk:', loadedRooms);
+  } catch (e) {
+    // ok if missing; log only if file exists but is corrupt
+    if (fs.existsSync(path.dirname(MAP_FILE))) {
+      console.warn('[MAP] load skipped or failed:', e?.message || e);
+    }
+  }
+}
+
+let saveTimer = null;
+function scheduleSave(){
+  if (saveTimer) return;
+  saveTimer = setTimeout(async ()=> {
+    saveTimer = null;
+    const dump = {};
+    for (const [roomName, r] of rooms) {
+      if (Array.isArray(r.lastMap) && r.lastMap.length) dump[roomName] = r.lastMap;
+    }
+    try {
+      await fsp.mkdir(path.dirname(MAP_FILE), { recursive:true });
+      await fsp.writeFile(MAP_FILE, JSON.stringify(dump), 'utf8');
+      // eslint-disable-next-line no-console
+      console.log('[MAP] saved', Object.keys(dump));
+    } catch(e){ console.warn('[MAP] save failed', e?.message || e); }
+  }, 200);
+}
+
 // === NEW (SOP): Probe collection state ======================================
 // Map key: `${room}:${probeId}` -> { acks:Set<string>, host:WebSocket }
 const probeCollectors = new Map();
 
+// --- Load persisted maps before accepting traffic ---------------------------
+await loadMapsFromDisk();
+
 // === WS connection handling ==================================================
 wss.on('connection', (ws, req) => {
-  // Allow-list guard — merged with your snippet to warn & close with 1008
+  // Allow-list guard — merged with allow-list and 1008 close
   if (HAS_ALLOWLIST) {
     const origin = req?.headers?.origin || '';
     if (!ALLOWED_ORIGINS.has(origin)) {
@@ -212,7 +291,7 @@ wss.on('connection', (ws, req) => {
   // If viewer joins and we have a map, send it immediately
   if (ws.role === 'viewer' && r0.lastMap && Array.isArray(r0.lastMap) && r0.lastMap.length) {
     console.log(`[MAP] replay to new viewer id=${ws.id ?? 'n/a'} room="${ws.room}" entries=${r0.lastMap.length}`);
-    send(ws, { type: 'map:sync', map: r0.lastMap, room: ws.room });
+    send(ws, { type: 'map:sync', room: ws.room, map: r0.lastMap, key: r0.lastKey });
   }
 
   // Notify room about updated presence
@@ -230,7 +309,7 @@ wss.on('connection', (ws, req) => {
     }
 
     // Room join / role update
-    if (msg.type === 'join') {
+    if (msg.type === 'join' || msg.type === 'hello') {
       const nextRole = msg.role ? String(msg.role).toLowerCase() : ws.role;
       const nextRoom = msg.room || ws.room || 'default';
 
@@ -253,7 +332,7 @@ wss.on('connection', (ws, req) => {
 
       // If the room already has a map, sync it to the joining client
       if (r.lastMap && Array.isArray(r.lastMap) && r.lastMap.length) {
-        send(ws, { type: 'map:sync', map: r.lastMap, room: ws.room });
+        send(ws, { type: 'map:sync', room: ws.room, map: r.lastMap, key: r.lastKey });
       }
       return;
     }
@@ -261,24 +340,35 @@ wss.on('connection', (ws, req) => {
     // App-level ping (protocol ping/pong preferred, kept for compatibility)
     if (msg.type === 'ping') { return; }
 
-    // === Map set/get/sync ====================================================
-    // Host sets map for room
-    if (ws.role === 'host' && msg.type === 'map:set' && Array.isArray(msg.map)) {
+    // === Map set/ensure/get/sync ============================================
+    // Host sets/ensures map for room
+    // {type:'map:set', map:[...], key?:string}
+    // {type:'map:ensure', map:[...], key:string}
+    if (ws.role === 'host' && (msg.type === 'map:set' || msg.type === 'map:ensure') && Array.isArray(msg.map)) {
       const r = getRoom(ws.room);
-      r.lastMap = msg.map;
-      console.log(`[MAP] set for room "${ws.room}" entries=${msg.map.length} broadcasting to ${r.viewers.size} viewer(s)`);
-      // broadcast to viewers only
-      broadcastToViewers(ws.room, { type: 'map:sync', map: r.lastMap, room: ws.room }, ws);
+      const inKey = msg.key || keyOf(msg.map);
+      // Only update/broadcast if different
+      if (r.lastKey !== inKey) {
+        r.lastMap = msg.map;
+        r.lastKey = inKey;
+        // broadcast to viewers only (RAW, not wrapped)
+        broadcastToViewers_raw(ws.room, { type:'map:sync', room: ws.room, map: r.lastMap, key: r.lastKey }, ws);
+        scheduleSave(); // optional: persist to disk
+        console.log(`[MAP] ${msg.type} room="${ws.room}" entries=${msg.map.length}`);
+      }
       // ack back to host so you know the server saw it
-      send(ws, { type: 'map:ack', room: ws.room, viewers: r.viewers.size });
+      send(ws, { type:'map:ack', room: ws.room, key: r.lastKey, viewers: r.viewers.size });
       return;
     }
 
-    // Viewer asks server for current map
+    // Anyone can ask server for current map
+    // {type:'map:get'}
     if (msg.type === 'map:get' && ws.room) {
       const r = getRoom(ws.room);
       if (r.lastMap && Array.isArray(r.lastMap) && r.lastMap.length) {
-        send(ws, { type: 'map:sync', map: r.lastMap, room: ws.room });
+        send(ws, { type:'map:sync', room: ws.room, map: r.lastMap, key: r.lastKey });
+      } else {
+        send(ws, { type:'map:empty', room: ws.room });
       }
       return;
     }
@@ -339,7 +429,7 @@ wss.on('connection', (ws, req) => {
     // === Original host→viewer relay preserved (info wrapper)
     if (ws.role === 'host') {
       // Relay the original message as {type:'info', payload:<msg>, room}
-      broadcastToViewers(ws.room, msg, ws);
+      broadcastToViewers_wrapped(ws.room, msg, ws);
     }
   });
 
