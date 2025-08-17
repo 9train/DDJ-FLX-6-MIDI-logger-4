@@ -3,6 +3,10 @@
 // SOP merge: integrates rooms + map sync + presence + room-scoped MIDI relay
 // while keeping original behavior (HTTP server, SINGLE_PORT, origin allow-list,
 // HID/MIDI global broadcast, heartbeat, hello/join/ping).
+//
+// NEW (SOP): Adds probe fan-out & ack collection per room
+//   - Host -> {type:'probe', id}  => server broadcasts to viewers and summarizes
+//   - Viewer -> {type:'probe:ack', id} => server counts unique acks per probe
 
 import path from 'path';
 import express from 'express';
@@ -40,8 +44,7 @@ const MULTI_ALLOWED  = (process.env.ALLOWED_ORIGINS || '')
   .map(s => s.trim())
   .filter(Boolean);
 
-// HARD-CODED entries (your snippet) — replace these with your real domains.
-// You can also extend via ALLOWED_ORIGINS env without changing code.
+// HARD-CODED entries — replace with your real domains if desired.
 const HARDCODED_ALLOWED = [
   'https://www.setsoutofcontext.com',
   'https://setsoutofcontext.com',
@@ -156,10 +159,13 @@ function send(ws, obj) {
   try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); } catch {}
 }
 
+// === NEW (SOP): Probe collection state ======================================
+// Map key: `${room}:${probeId}` -> { acks:Set<string>, host:WebSocket }
+const probeCollectors = new Map();
+
 // === WS connection handling ==================================================
 wss.on('connection', (ws, req) => {
   // Allow-list guard — merged with your snippet to warn & close with 1008
-  // If ALLOWED_ORIGINS has entries, reject any origin not in the set.
   if (HAS_ALLOWLIST) {
     const origin = req?.headers?.origin || '';
     if (!ALLOWED_ORIGINS.has(origin)) {
@@ -185,6 +191,9 @@ wss.on('connection', (ws, req) => {
     ws.role = 'viewer';
     ws.room = 'default';
   }
+
+  // NEW: per-connection id (used for probe ack dedupe)
+  ws.id = `c_${Math.random().toString(36).slice(2, 10)}`;
 
   // Heartbeat: mark alive and refresh on pong
   ws.isAlive = true;
@@ -270,6 +279,47 @@ wss.on('connection', (ws, req) => {
       const r = getRoom(ws.room);
       if (r.lastMap && Array.isArray(r.lastMap) && r.lastMap.length) {
         send(ws, { type: 'map:sync', map: r.lastMap, room: ws.room });
+      }
+      return;
+    }
+
+    // === NEW (SOP): Probe fan-out and summary ================================
+    // host -> server: {type:'probe', id}
+    if (ws.role === 'host' && msg.type === 'probe' && msg.id) {
+      const r = getRoom(ws.room);
+      const key = `${ws.room}:${msg.id}`;
+      const col = { acks: new Set(), host: ws };
+      probeCollectors.set(key, col);
+
+      // Fan out to viewers in the room
+      for (const v of r.viewers) {
+        send(v, { type:'probe', id: msg.id, room: ws.room });
+      }
+
+      // After 800ms, summarize back to the host and clear
+      setTimeout(() => {
+        const done = probeCollectors.get(key);
+        if (!done) return;
+        send(ws, {
+          type: 'probe:summary',
+          id: msg.id,
+          room: ws.room,
+          count: done.acks.size,
+          totalViewers: r.viewers.size
+        });
+        probeCollectors.delete(key);
+      }, 800);
+      return;
+    }
+
+    // viewer -> server: {type:'probe:ack', id, viewerId?}
+    if (ws.role === 'viewer' && msg.type === 'probe:ack' && msg.id) {
+      const key = `${ws.room}:${msg.id}`;
+      const col = probeCollectors.get(key);
+      if (col) {
+        // Use ws.id if available; otherwise generate a short token
+        const vid = ws.id || `v${Math.random().toString(36).slice(2,7)}`;
+        col.acks.add(vid);
       }
       return;
     }
