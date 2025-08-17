@@ -17,13 +17,14 @@
   <style>
     body.viewer #recStart,
     body.viewer #recSave { display: none !important; }
-    
-/* Ensure lit elements are clearly visible */
-[data-lit="1"], .lit {
-  opacity: 1 !important;
-  /* If your skin relies on currentColor, keep this */
-  color: rgb(0, 234, 255);
-}
+
+    /* Ensure lit elements are clearly visible */
+    [data-lit="1"], .lit {
+      opacity: 1 !important;
+      /* If your skin relies on currentColor, keep this */
+      color: rgb(0, 234, 255);
+    }
+
     /* Hide host-only panels/menus/timelines if anything tries to inject them */
     body.viewer .panel,
     body.viewer [data-panel],
@@ -71,7 +72,7 @@
     await initBoard({ hostId: 'boardHost' });
     THEME.attachThemeDesigner({ svgRoot: document.querySelector('#boardHost svg') });
 
-    // Minimal normalizer for incoming info
+    // Minimal normalizer for incoming info (left in place for compatibility)
     function normalizeInfo(x) {
       if (!x || typeof x !== 'object') return x;
       if (x.type && typeof x.payload === 'object') {
@@ -97,13 +98,12 @@
     }
     window.normalizeInfo = normalizeInfo;
 
-    // Unified consumer the WS bootstrap will call
+    // Unified consumer your UI/board can call. The WS bootstrap for viewers
+    // ignores raw MIDI/info and uses ops; keeping this for UI compatibility.
     const baseConsume = (info) => boardConsume(info);
     window.consumeInfo = baseConsume;
 
-<script type="module" src="/src/viewer-native-lights.js"></script>
-
-    // Status helper
+    // Status helper (wired by WS bootstrap)
     const wsStatusEl = document.getElementById('wsStatus');
     window.setWSStatus = (s) => { if (wsStatusEl) wsStatusEl.textContent = 'WS: ' + s; };
 
