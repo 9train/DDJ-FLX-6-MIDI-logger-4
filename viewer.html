@@ -185,23 +185,29 @@
      *  - Uses existing normalizeInfo() + setWSStatus()
      *  - Exposes window.wsClient for console diagnostics
      ****************************************************************/
-    (() => {
-      const WS_ROLE = ROLE; // 'viewer'
-      const resolvedURL = (window.WS_URL && String(window.WS_URL)) || wsURL || getWSURL();
+    <script type="module">
+  import { connectWS } from '/src/ws.js';
+  import { getWSURL } from '/src/roles.js';
 
-      const qs   = new URLSearchParams(location.search);
-      const room = qs.get('room') || 'default';
+  (() => {
+    const WS_ROLE = 'viewer';
+    const wsURL = (window.WS_URL && String(window.WS_URL)) || getWSURL();
 
-      const wsClient = connectWS({
-        url: resolvedURL,
-        role: WS_ROLE,
-        room,
-        onInfo: (info) => window.consumeInfo?.(normalizeInfo(info)),
-        onStatus: (s)  => window.setWSStatus?.(s),
-      });
+    const qs   = new URLSearchParams(location.search);
+    const room = qs.get('room') || 'default';
 
-      window.wsClient = wsClient; // for console/diagnostics
-    })();
+    const wsClient = connectWS({
+      url: wsURL,
+      role: WS_ROLE,
+      room,
+      onInfo: (info) => window.consumeInfo?.(normalizeInfo(info)),
+      onStatus: (s) => window.setWSStatus?.(s),
+    });
+
+    window.wsClient = wsClient; // expose for console/diagnostics
+  })();
+</script>
+
 
     /****************************************************************
      * SOP ADD: Probe responder (viewer)
