@@ -20,23 +20,48 @@ import { getUnifiedMap } from './board.js';
 const LS_KEY = 'flx.learned.map.v1';
 
 function loadLearned() {
+  // Prefer the namespaced key; fall back to legacy 'learned_map' if present.
   try {
     const t = localStorage.getItem(LS_KEY);
-    return t ? JSON.parse(t) : [];
-  } catch { return []; }
+    if (t) return JSON.parse(t);
+  } catch {}
+  try {
+    const legacy = localStorage.getItem('learned_map');
+    return legacy ? JSON.parse(legacy) : [];
+  } catch {
+    return [];
+  }
 }
 
 // MERGED WITH SOP: keep LS_KEY and dispatch, plus push to WS room if available.
+// - Also mirror-write to 'learned_map' for compatibility with other loaders.
+// - Push via preferred sendMap(), then send(), then raw socket as final fallback.
 function saveLearned(arr) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(arr)); } catch {}
-  // notify runtime to re-merge (board.js listens to this)
+  const safeArr = Array.isArray(arr) ? arr : [];
+  const payload = {
+    type: 'map:set',
+    map: safeArr,
+    ts: Date.now(), // keep timestamp to help any dedupe logic server-side
+  };
+
+  // Write to both keys (back-compat)
+  try { localStorage.setItem(LS_KEY, JSON.stringify(safeArr)); } catch {}
+  try { localStorage.setItem('learned_map', JSON.stringify(safeArr)); } catch {}
+
+  // Notify runtime to re-merge (board.js listens to this)
   try { window.dispatchEvent(new CustomEvent('flx:map-updated')); } catch {}
-  // NEW (from your snippet): if we're the host and WS is connected, push to the room immediately
+
+  // Push to room (host only or any client with wsClient available)
   try {
     if (window.wsClient?.sendMap) {
-      window.wsClient.sendMap(Array.isArray(arr) ? arr : []);
+      // Preferred explicit API
+      window.wsClient.sendMap(safeArr);
     } else if (window.wsClient?.send) {
-      window.wsClient.send({ type:'map:set', map: Array.isArray(arr) ? arr : [], ts: Date.now() });
+      // Generic client wrapper (kept from the original)
+      window.wsClient.send(payload);
+    } else if (window.wsClient?.socket?.readyState === 1) {
+      // Your requested raw-socket fallback (adds ts for parity)
+      window.wsClient.socket.send(JSON.stringify(payload));
     }
   } catch {}
 }
@@ -300,11 +325,11 @@ function buildPanel(svg) {
       <button id="wizUseExact">Use</button>
     </div>
 
-<div class="wiz-row">
+    <div class="wiz-row">
       <label class="wiz-mini" title="Scale raw 0-127 values">Sensitivity:</label>
       <input id="wizSens" type="number" step="0.1" value="1" style="width:60px;" />
     </div>
-    
+
     <div class="wiz-row">
       <details open>
         <summary><strong>Link Across Modes</strong> (same physical pad in HOT CUE / PAD FX / etc.)</summary>
