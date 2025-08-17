@@ -17,7 +17,13 @@
   <style>
     body.viewer #recStart,
     body.viewer #recSave { display: none !important; }
-
+    
+/* Ensure lit elements are clearly visible */
+[data-lit="1"], .lit {
+  opacity: 1 !important;
+  /* If your skin relies on currentColor, keep this */
+  color: rgb(0, 234, 255);
+}
     /* Hide host-only panels/menus/timelines if anything tries to inject them */
     body.viewer .panel,
     body.viewer [data-panel],
@@ -94,6 +100,8 @@
     // Unified consumer the WS bootstrap will call
     const baseConsume = (info) => boardConsume(info);
     window.consumeInfo = baseConsume;
+
+<script type="module" src="/src/viewer-native-lights.js"></script>
 
     // Status helper
     const wsStatusEl = document.getElementById('wsStatus');
