@@ -1,8 +1,8 @@
 // server/server.js
 // Static web server + WebSocket + optional MIDI→WS bridge (ESM version)
-// SOP merge: integrates rooms + map sync + room-scoped MIDI relay while keeping
-// original behavior (HTTP server, SINGLE_PORT, origin allow-list, HID/MIDI bridge,
-// global broadcast for HID/MIDI, heartbeat, hello/join/ping).
+// SOP merge: integrates rooms + map sync + presence + room-scoped MIDI relay
+// while keeping original behavior (HTTP server, SINGLE_PORT, origin allow-list,
+// HID/MIDI global broadcast, heartbeat, hello/join/ping).
 
 import path from 'path';
 import express from 'express';
@@ -17,7 +17,7 @@ const __dirname  = path.dirname(__filename);
 
 // ---- Config (env with sensible defaults)
 const PORT        = Number(process.env.PORT || 8080);
-const HOST        = process.env.HOST || '0.0.0.0'; // SOP: bind to all interfaces
+const HOST        = process.env.HOST || '0.0.0.0'; // bind to all interfaces
 const WSPORT_ENV  = process.env.WSPORT;            // preserve original env override
 const MIDI_INPUT  = process.env.MIDI_INPUT  || ''; // e.g., "DDJ-FLX6"
 const MIDI_OUTPUT = process.env.MIDI_OUTPUT || ''; // unused here, kept for future
@@ -30,21 +30,30 @@ const SINGLE_PORT =
   !!process.env.FLY_MACHINE_ID;
 
 // If SINGLE_PORT, default WS to the same port as HTTP unless explicitly overridden.
-const WSPORT = Number(
-  WSPORT_ENV ?? (SINGLE_PORT ? PORT : 8787)
-);
+const WSPORT = Number(WSPORT_ENV ?? (SINGLE_PORT ? PORT : 8787));
 
 // ---- Optional Origin allow-list (non-breaking by default)
+// ENV support (original)
 const SINGLE_ALLOWED = process.env.ALLOWED_ORIGIN?.trim();
 const MULTI_ALLOWED  = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
 
-const HAS_ALLOWLIST = !!SINGLE_ALLOWED || MULTI_ALLOWED.length > 0;
+// HARD-CODED entries (your snippet) — replace these with your real domains.
+// You can also extend via ALLOWED_ORIGINS env without changing code.
+const HARDCODED_ALLOWED = [
+  'https://www.setsoutofcontext.com',
+  'https://setsoutofcontext.com',
+  // add any staging/subdomains you actually open from
+];
+
+// Build the final allow-list = ENV (if any) ∪ HARDCODED (if any)
+const HAS_ALLOWLIST = !!SINGLE_ALLOWED || MULTI_ALLOWED.length > 0 || HARDCODED_ALLOWED.length > 0;
 const ALLOWED_ORIGINS = new Set([
   ...(SINGLE_ALLOWED ? [SINGLE_ALLOWED] : []),
   ...MULTI_ALLOWED,
+  ...HARDCODED_ALLOWED,
 ]);
 
 // ---- Static web server
@@ -53,8 +62,7 @@ const app = express();
 // Serve the public folder at root (includes /learned_map.json if you drop it there)
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-// SOP: ALSO serve a relative ./public for local/dev convenience (matches your snippet).
-// Safe: if a file isn't found here, Express falls through to the next middleware.
+// Also serve a relative ./public for local/dev convenience
 app.use(express.static('public'));
 
 // Serve /src so ES module imports like /src/board.js load
@@ -75,16 +83,13 @@ app.get('/favicon.ico', (_req, res) => res.sendStatus(204));
 
 const server = http.createServer(app);
 
-// --- SOP: listen using process.env.PORT and bind to 0.0.0.0
+// --- Listen using process.env.PORT and bind to 0.0.0.0
 server.listen(PORT, HOST, () => {
   console.log(`[HTTP] Listening on http://${HOST}:${PORT}  (SINGLE_PORT=${SINGLE_PORT ? 'on' : 'off'})`);
 });
 
 // ---- WebSocket server
 let wss;
-
-// Prefer single-port upgrade (share HTTP server) when SINGLE_PORT is on.
-// Otherwise, preserve the original separate-port listener on WSPORT.
 if (SINGLE_PORT) {
   wss = new WebSocketServer({ server });
   console.log(`[WS] Attached to HTTP server on ${HOST}:${PORT} (shared port)`);
@@ -102,27 +107,36 @@ function broadcast(obj) {
   }
 }
 
-// === NEW: Room + Map state (SOP A) ===
-// rooms: roomName -> { clients:Set<WebSocket>, map: object|null }
+// === Rooms with presence + lastMap ==========================================
+// roomName -> { hosts:Set<WebSocket>, viewers:Set<WebSocket>, lastMap:Array|null }
 const rooms = new Map();
 
-function getRoom(room) {
-  if (!rooms.has(room)) rooms.set(room, { clients: new Set(), map: null });
-  return rooms.get(room);
+function getRoom(roomName) {
+  if (!rooms.has(roomName)) {
+    rooms.set(roomName, {
+      hosts:   new Set(),
+      viewers: new Set(),
+      lastMap: null,
+    });
+  }
+  return rooms.get(roomName);
 }
 
-// Broadcast to every client in a room (host or viewer), except optional sender
-function broadcastRoom(room, data, except) {
-  const payload = JSON.stringify(data);
-  const r = getRoom(room);
-  for (const c of r.clients) {
-    if (c !== except && c.readyState === WebSocket.OPEN) {
-      try { c.send(payload); } catch {}
-    }
+// Presence broadcast
+function broadcastPresence(roomName) {
+  const r = getRoom(roomName);
+  const msg = JSON.stringify({
+    type: 'presence',
+    room: roomName,
+    hosts: r.hosts.size,
+    viewers: r.viewers.size
+  });
+  for (const s of [...r.hosts, ...r.viewers]) {
+    try { if (s.readyState === WebSocket.OPEN) s.send(msg); } catch {}
   }
 }
 
-// Keep the original viewer-scoped helper used by host → viewers info relay
+// Keep viewer-scoped helper used by host → viewers info relay (unchanged)
 function broadcastToViewers(room, payload, exceptWs) {
   const msg = JSON.stringify({ type: 'info', payload, room });
   for (const client of wss.clients) {
@@ -137,24 +151,32 @@ function broadcastToViewers(room, payload, exceptWs) {
   }
 }
 
-// --- WS connection handling
+// Convenience send
+function send(ws, obj) {
+  try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); } catch {}
+}
+
+// === WS connection handling ==================================================
 wss.on('connection', (ws, req) => {
-  // SOP: Keep original permissive behavior unless allow-list is configured.
+  // Allow-list guard — merged with your snippet to warn & close with 1008
+  // If ALLOWED_ORIGINS has entries, reject any origin not in the set.
   if (HAS_ALLOWLIST) {
     const origin = req?.headers?.origin || '';
-       if (!ALLOWED_ORIGINS.has(origin)) {
+    if (!ALLOWED_ORIGINS.has(origin)) {
+      console.warn('[WS] blocked origin', origin);
       try { ws.close(1008, 'origin not allowed'); } catch {}
       return;
     }
   } else if (process.env.NODE_ENV === 'production' && process.env.ALLOWED_ORIGIN) {
     const origin = req?.headers?.origin;
     if (origin !== process.env.ALLOWED_ORIGIN) {
-      try { ws.close(); } catch {}
+      console.warn('[WS] blocked origin (legacy check)', origin);
+      try { ws.close(1008, 'origin not allowed'); } catch {}
       return;
     }
   }
 
-  // --- Parse role/room from URL query (?role=host&room=default)
+  // Parse role/room from URL query (?role=host&room=default)
   try {
     const parsed = new URL(req.url, 'http://localhost');
     ws.role = (parsed.searchParams.get('role') || 'viewer').toLowerCase();
@@ -169,14 +191,24 @@ wss.on('connection', (ws, req) => {
   ws.on('pong', () => { ws.isAlive = true; });
 
   // Initial hello back (handshake)
-  try { ws.send(JSON.stringify({ type: 'hello', ts: Date.now() })); } catch {}
+  send(ws, { type: 'hello', ts: Date.now() });
 
-  // === Join default room set immediately so room features work pre-join ===
-  // (Your snippet added on explicit 'join'; we also add at connect so map:get
-  // works right away if a viewer asks before sending 'join'.)
-  getRoom(ws.room).clients.add(ws);
+  // Place socket into room sets immediately (so presence + map:get works pre-join)
+  const r0 = getRoom(ws.room);
+  if (ws.role === 'host') r0.hosts.add(ws); else r0.viewers.add(ws);
 
-  // --- Handle messages from clients
+  // Send presence snapshot
+  send(ws, { type: 'presence', room: ws.room, hosts: r0.hosts.size, viewers: r0.viewers.size });
+
+  // If viewer joins and we have a map, send it immediately
+  if (ws.role === 'viewer' && r0.lastMap && Array.isArray(r0.lastMap) && r0.lastMap.length) {
+    console.log(`[MAP] replay to new viewer id=${ws.id ?? 'n/a'} room="${ws.room}" entries=${r0.lastMap.length}`);
+    send(ws, { type: 'map:sync', map: r0.lastMap, room: ws.room });
+  }
+
+  // Notify room about updated presence
+  broadcastPresence(ws.room);
+
   ws.on('message', (buf) => {
     let msg = null;
     try { msg = JSON.parse(buf.toString()); } catch {}
@@ -188,21 +220,31 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
-    // === Room join (SOP A) ===
+    // Room join / role update
     if (msg.type === 'join') {
-      ws.role = msg.role ? String(msg.role).toLowerCase() : ws.role;
+      const nextRole = msg.role ? String(msg.role).toLowerCase() : ws.role;
       const nextRoom = msg.room || ws.room || 'default';
 
-      // Move socket between room sets if needed
-      const prev = rooms.get(ws.room);
-      if (prev) prev.clients.delete(ws);
-      ws.room = nextRoom;
-      getRoom(ws.room).clients.add(ws);
+      // Remove from old sets
+      const prev = getRoom(ws.room);
+      prev.hosts.delete(ws);
+      prev.viewers.delete(ws);
 
-      // On join, if the room already has a map, sync it to the new client (SOP A)
+      // Update role/room
+      ws.role = nextRole;
+      ws.room = nextRoom;
+
+      // Add to new sets
       const r = getRoom(ws.room);
-      if (r.map) {
-        try { ws.send(JSON.stringify({ type: 'map:sync', map: r.map })); } catch {}
+      if (ws.role === 'host') r.hosts.add(ws); else r.viewers.add(ws);
+
+      // Send presence snapshot and broadcast
+      send(ws, { type: 'presence', room: ws.room, hosts: r.hosts.size, viewers: r.viewers.size });
+      broadcastPresence(ws.room);
+
+      // If the room already has a map, sync it to the joining client
+      if (r.lastMap && Array.isArray(r.lastMap) && r.lastMap.length) {
+        send(ws, { type: 'map:sync', map: r.lastMap, room: ws.room });
       }
       return;
     }
@@ -210,34 +252,41 @@ wss.on('connection', (ws, req) => {
     // App-level ping (protocol ping/pong preferred, kept for compatibility)
     if (msg.type === 'ping') { return; }
 
-    // === Map set/get/sync (SOP A) ===
-    // Host (or any sender you trust) sets / updates the room's current map
-    if (msg.type === 'map:set' && ws.room) {
+    // === Map set/get/sync ====================================================
+    // Host sets map for room
+    if (ws.role === 'host' && msg.type === 'map:set' && Array.isArray(msg.map)) {
       const r = getRoom(ws.room);
-      r.map = msg.map || null; // store full JSON object/array
-      // Broadcast to everyone in the room (viewers + host), excluding nobody
-      broadcastRoom(ws.room, { type: 'map:sync', map: r.map }, null);
+      r.lastMap = msg.map;
+      console.log(`[MAP] set for room "${ws.room}" entries=${msg.map.length} broadcasting to ${r.viewers.size} viewer(s)`);
+      // broadcast to viewers only
+      broadcastToViewers(ws.room, { type: 'map:sync', map: r.lastMap, room: ws.room }, ws);
+      // ack back to host so you know the server saw it
+      send(ws, { type: 'map:ack', room: ws.room, viewers: r.viewers.size });
       return;
     }
 
-    // Viewer asks server for current map (if they loaded empty)
+    // Viewer asks server for current map
     if (msg.type === 'map:get' && ws.room) {
       const r = getRoom(ws.room);
-      if (r.map) {
-        try { ws.send(JSON.stringify({ type: 'map:sync', map: r.map })); } catch {}
+      if (r.lastMap && Array.isArray(r.lastMap) && r.lastMap.length) {
+        send(ws, { type: 'map:sync', map: r.lastMap, room: ws.room });
       }
       return;
     }
 
-    // === Room-scoped MIDI relay (SOP B) ===
-    // Expect: { type:'midi', mtype:'noteon'|'noteoff'|'cc', ch, code/controller? , value? }
-    // We relay to all clients in the same room EXCEPT the sender.
+    // === Room-scoped MIDI relay (unchanged feature)
+    // Expect: { type:'midi', mtype:'noteon'|'noteoff'|'cc', ch, ... }
+    // Relay to all clients in the same room EXCEPT the sender.
     if (msg.type === 'midi' && ws.room) {
-      broadcastRoom(ws.room, { ...msg }, ws);
+      const r = getRoom(ws.room);
+      const packet = JSON.stringify({ ...msg, room: ws.room });
+      for (const s of [...r.hosts, ...r.viewers]) {
+        if (s !== ws && s.readyState === WebSocket.OPEN) { try { s.send(packet); } catch {} }
+      }
       return;
     }
 
-    // === Original host→viewer scoped info relay preserved ===
+    // === Original host→viewer relay preserved (info wrapper)
     if (ws.role === 'host') {
       // Relay the original message as {type:'info', payload:<msg>, room}
       broadcastToViewers(ws.room, msg, ws);
@@ -245,13 +294,15 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
-    // Remove from its room set
-    const r = rooms.get(ws.room);
-    if (r) r.clients.delete(ws);
+    const r = getRoom(ws.room);
+    r.hosts.delete(ws);
+    r.viewers.delete(ws);
+    // Broadcast updated presence when someone leaves
+    broadcastPresence(ws.room);
   });
 });
 
-// --- Server-side heartbeat: send protocol pings every 30s (original)
+// --- Server-side heartbeat: protocol pings every 30s (original)
 const HEARTBEAT_MS = 30000;
 const hbInterval = setInterval(() => {
   for (const ws of wss.clients) {
@@ -261,19 +312,18 @@ const hbInterval = setInterval(() => {
   }
 }, HEARTBEAT_MS);
 
-// === SOP ADD: Room-scoped heartbeat (env-gated to avoid double pings by default) ===
-// Enable with ROOM_HEARTBEAT=1 if you specifically want to drive heartbeat via rooms.
+// Optional extra room-scoped heartbeat (env-gated)
 const ENABLE_ROOM_HEARTBEAT = process.env.ROOM_HEARTBEAT === '1';
 if (ENABLE_ROOM_HEARTBEAT) {
   setInterval(() => {
-    for (const [_, r] of rooms) {
-      for (const ws of r.clients) {
+    for (const [_name, r] of rooms) {
+      for (const ws of [...r.hosts, ...r.viewers]) {
         if (!ws.isAlive) { ws.terminate(); continue; }
         ws.isAlive = false;
         try { ws.ping(); } catch {}
       }
     }
-  }, 30000);
+  }, HEARTBEAT_MS);
 }
 
 // Clean up interval on shutdown
