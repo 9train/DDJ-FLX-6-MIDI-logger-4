@@ -90,6 +90,7 @@
     import { initBoard, consumeInfo as boardConsume, getUnifiedMap } from '/src/board.js';
     import * as THEME from '/src/theme.js';
     import { connectWS } from '/src/ws.js';
+    import { getWSURL } from '/src/roles.js';  // SOP add
 
     /****************************************************************
      * Force viewer role + WS URL resolution
@@ -180,16 +181,27 @@
     const setWSStatus = (s) => { if (wsStatusEl) wsStatusEl.textContent = 'WS: ' + s; };
 
     /****************************************************************
-     * WebSocket (viewer)
-     * SOP CHANGE: onInfo now normalizes before consuming.
-     ****************************************************************/
-    const wsClient = connectWS({
-      url: wsURL,
-      role,
-      onInfo: (info) => window.consumeInfo(normalizeInfo(info)), // SOP normalization
-      onStatus: (s) => setWSStatus(s),
-    });
-    window.wsClient = wsClient;
+ * WebSocket (viewer) — SOP replacement
+ * - Force role='viewer'
+ * - Resolve WS URL via getWSURL() (overridden by window.WS_URL if present)
+ * - Read room from URL (?room=…) with fallback 'default'
+ * - Normalize incoming info before consuming
+ ****************************************************************/
+const role = 'viewer';
+const wsURL = (window.WS_URL && String(window.WS_URL)) || getWSURL();
+
+// derive room once from querystring (default='default')
+const qs   = new URLSearchParams(location.search);
+const room = qs.get('room') || 'default';
+
+const wsClient = connectWS({
+  url: wsURL,
+  role,
+  room,
+  onInfo: (info) => window.consumeInfo(normalizeInfo(info)),
+  onStatus: (s) => setWSStatus(s),
+});
+window.wsClient = wsClient; // expose for console/diagnostics
 
     /****************************************************************
      * SOP ADD: Probe responder (viewer)
