@@ -321,31 +321,8 @@
     });
   </script>
 
-  <!-- ===== SOP: WebSocket (host) replacement (isolated, no name collisions) ===== -->
-  <script type="module">
-    import { connectWS } from '/src/ws.js';
-    import { getWSURL } from '/src/roles.js';
-
-    // WebSocket (host) — SOP replacement: isolated, no collisions
-    (() => {
-      const WS_ROLE = 'host';
-      const wsURL = (window.WS_URL && String(window.WS_URL)) || getWSURL();
-
-      const qs   = new URLSearchParams(location.search);
-      const room = qs.get('room') || 'default';
-
-      const wsClient = connectWS({
-        url: wsURL,
-        role: WS_ROLE,
-        room,
-        onInfo:  (info) => window.consumeInfo?.(info),
-        onStatus:(s)    => window.setWSStatus?.(s),
-      });
-
-      // Expose for console/diagnostics
-      window.wsClient = wsClient;
-    })();
-  </script>
+  <!-- ===== SOP: WebSocket (host) replacement switched to external bootstrap ===== -->
+  <script type="module" src="/src/bootstrap-host.js"></script>
 
   <!-- One-shot probe AFTER wsClient exists (reference via window.wsClient) -->
   <script>
