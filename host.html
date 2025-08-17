@@ -8,11 +8,12 @@
   <!-- Optional: silence missing favicon 404 -->
   <link rel="icon" href="data:,">
 
-<script>
-  window.WS_URL = "wss://ws.setsoutofcontext.com";
-</script>
+  <!-- Existing env override (kept) -->
+  <script>
+    window.WS_URL = "wss://ws.setsoutofcontext.com";
+  </script>
 
-  <!-- SOP ADD: Force the correct secure WS endpoint for all devices/browsers -->
+  <!-- SOP ADD: Force the correct secure WS endpoint for all devices/browsers (kept) -->
   <script>
     // If you want to change environments, update this single line:
     // e.g., "wss://ws.setsoutofcontext.com"
@@ -110,44 +111,9 @@
     const midiStatusEl = document.getElementById('midiStatus');
     const setWSStatus   = (s) => { if (wsStatusEl)   wsStatusEl.textContent   = 'WS: '   + s; };
     const setMIDIStatus = (s) => { if (midiStatusEl) midiStatusEl.textContent = 'MIDI: ' + s; };
-
-    <!-- ===== SOP: WebSocket (host) replacement (isolated, no name collisions) ===== -->
-<script type="module">
-  import { connectWS } from '/src/ws.js';
-  import { getWSURL } from '/src/roles.js';
-
-  // NOTE: keep existing helpers (setWSStatus, consumeInfo, etc.) as-is elsewhere in file.
-
-  (() => {
-    const WS_ROLE = 'host'; // renamed to avoid 'role' collisions
-    const wsURL = (window.WS_URL && String(window.WS_URL)) || getWSURL();
-
-    const qs   = new URLSearchParams(location.search);
-    const room = qs.get('room') || 'default';
-
-    const wsClient = connectWS({
-      url: wsURL,
-      role: WS_ROLE,
-      room,
-      onInfo: (info) => window.consumeInfo?.(info),
-      onStatus: (s) => window.setWSStatus?.(s),
-    });
-
-    // expose for console/diagnostics
-    window.wsClient = wsClient;
-  })();
-</script>
-
-
-    /* ===================== SOP ADD: viewer probe (host -> viewers) ===================== *
-     * Your requested snippet fires a one-shot probe immediately.
-     * Placed here so it runs after wsClient exists.
-     * ================================================================================== */
-    (function () {
-      const id = Math.random().toString(36).slice(2, 9);
-      try { wsClient?.send?.({ type: 'probe', id }); } catch {}
-      console.log('[probe] sent', id);
-    })();
+    // Expose for snippet callbacks
+    window.setWSStatus = setWSStatus;
+    window.setMIDIStatus = setMIDIStatus;
 
     /****************************************************************
      * SOP MERGE: MIDI shape normalizer + single forwarding wrapper
@@ -214,7 +180,7 @@
     const origConsume = window.consumeInfo; // keep original rendering consumer
     window.consumeInfo = (info) => {
       const n = normalizeInfo(info);
-      if (wsClient?.isAlive?.()) wsClient.send(n);
+      if (window.wsClient?.isAlive?.()) window.wsClient.send(n);
       return origConsume(n);
     };
 
@@ -224,10 +190,10 @@
     function pushMap() {
       try {
         const mapArray = loadMappings() || [];
-        if (wsClient?.sendMap) {
-          wsClient.sendMap(mapArray);
+        if (window.wsClient?.sendMap) {
+          window.wsClient.sendMap(mapArray);
         } else {
-          wsClient?.send?.({ type: 'map:set', map: mapArray, ts: Date.now() });
+          window.wsClient?.send?.({ type: 'map:set', map: mapArray, ts: Date.now() });
         }
       } catch (e) {
         console.warn('[host] pushMap failed', e);
@@ -353,6 +319,41 @@
     document.addEventListener('keydown', (e)=>{
       if (e.shiftKey && e.key.toLowerCase()==='t') THEME.toggle();
     });
+  </script>
+
+  <!-- ===== SOP: WebSocket (host) replacement (isolated, no name collisions) ===== -->
+  <script type="module">
+    import { connectWS } from '/src/ws.js';
+    import { getWSURL } from '/src/roles.js';
+
+    // WebSocket (host) — SOP replacement: isolated, no collisions
+    (() => {
+      const WS_ROLE = 'host';
+      const wsURL = (window.WS_URL && String(window.WS_URL)) || getWSURL();
+
+      const qs   = new URLSearchParams(location.search);
+      const room = qs.get('room') || 'default';
+
+      const wsClient = connectWS({
+        url: wsURL,
+        role: WS_ROLE,
+        room,
+        onInfo:  (info) => window.consumeInfo?.(info),
+        onStatus:(s)    => window.setWSStatus?.(s),
+      });
+
+      // Expose for console/diagnostics
+      window.wsClient = wsClient;
+    })();
+  </script>
+
+  <!-- One-shot probe AFTER wsClient exists (reference via window.wsClient) -->
+  <script>
+    (function () {
+      const id = Math.random().toString(36).slice(2, 9);
+      try { window.wsClient?.send?.({ type: 'probe', id }); } catch {}
+      console.log('[probe] sent', id);
+    })();
   </script>
 </body>
 </html>
