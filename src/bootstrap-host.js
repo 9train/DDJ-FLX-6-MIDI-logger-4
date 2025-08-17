@@ -1,13 +1,23 @@
 // /src/bootstrap-host.js
-// SOP REVISION: adds map bootstrap + ensure-on-connect/reconnect while preserving OG behavior.
-// - Keeps original host WS init (role/url/room, onInfo, onStatus)
-// - Caches/loads learned_map from localStorage or /learned_map.json (fallback)
-// - Listens for map:sync to persist & update window.__currentMap
-// - After connect: request map, wait ~700ms for server replay; if none, push local via map:ensure
-// - On first reconnect after open: repeat the ensure logic
+// SOP MERGE: Keep OG map bootstrap/ensure + add OPS pipeline.
+// - Preserves:
+//   • role/url/room wiring
+//   • localStorage + /learned_map.json fallback
+//   • map:get → map:sync handling and persistence
+//   • one-shot ensure after connect and after first reconnect
+// - Adds (from your snippet):
+//   • imports for applyOps, infoToOps, getUnifiedMap, normalizeInfo
+//   • onInfo pipeline: normalize→infoToOps(map)→applyOps locally→broadcast {type:'ops', seq, ops}
+//   • still forwards normalized raw info to window.consumeInfo if you want existing visuals
+//
+// Net effect: Host board updates immediately and viewers receive compact ops in-order.
 
-import { connectWS } from '/src/ws.js';
-import { getWSURL } from '/src/roles.js';
+import { connectWS }     from '/src/ws.js';
+import { getWSURL }      from '/src/roles.js';
+import { applyOps }      from '/src/engine/ops.js';
+import { infoToOps }     from '/src/engine/dispatcher.js';
+import { getUnifiedMap } from '/src/board.js';
+import { normalizeInfo } from '/src/engine/normalize.js';
 
 (function hostBootstrap(){
   const WS_ROLE = 'host';
@@ -18,7 +28,7 @@ import { getWSURL } from '/src/roles.js';
   const qs   = new URLSearchParams(location.search);
   const room = qs.get('room') || 'default';
 
-  // simple stable hash for versions
+  // ---- OG: simple stable hash for versions (kept) ----
   function keyOf(mapArr){
     const s = JSON.stringify(mapArr || []);
     let h = 5381;
@@ -26,6 +36,7 @@ import { getWSURL } from '/src/roles.js';
     return String(h >>> 0);
   }
 
+  // ---- OG: loadLocalMap from localStorage then /learned_map.json (kept) ----
   async function loadLocalMap(){
     // 1) localStorage
     try {
@@ -46,42 +57,77 @@ import { getWSURL } from '/src/roles.js';
     return null;
   }
 
+  // ---- OG: record server syncs + persist (kept) ----
   let lastSyncKey = null;
-
   function noteSync(msg){
     if (msg?.type === 'map:sync' && Array.isArray(msg.map)) {
-      // record we have a server map
       lastSyncKey = msg.key || keyOf(msg.map);
-      // expose current map globally for consumers
       try { window.__currentMap = msg.map; } catch {}
-      // persist locally for future boots / offline
       try { localStorage.setItem('learned_map', JSON.stringify(msg.map)); } catch {}
-      // notify listeners
       try { window.dispatchEvent(new CustomEvent('flx:map-updated')); } catch {}
     }
   }
 
+  // ---- NEW: sequence counter for ops broadcasting ----
+  let seq = 0;
+
+  // ---- Connect WS (merge OG + new onInfo) ----
   const wsClient = connectWS({
     url: wsURL,
     role: WS_ROLE,
     room,
-    onInfo:   (info) => { try { window.consumeInfo?.(info); } catch {} },
-    onStatus: (s)   => { try { window.setWSStatus?.(s); } catch {} },
-    onMessage: (msg)=> noteSync(msg),
+    onStatus: (s) => { try { window.setWSStatus?.(s); } catch {} },
+
+    // === NEW OPS PIPELINE (from your snippet) ===
+    // - Incoming raw host "info" (e.g., MIDI/controller change)
+    //   1) derive ops using current unified map
+    //   2) apply locally on host (immediate visual/logic)
+    //   3) broadcast ops to viewers with increasing seq
+    //   4) (optional) still forward normalized info to existing UI
+    onInfo: (raw) => {
+      try {
+        const map = getUnifiedMap() || [];
+        const ops = infoToOps(raw, map);
+        if (Array.isArray(ops) && ops.length) {
+          // 2) Apply locally on host
+          try { applyOps(ops); } catch {}
+          // 3) Broadcast ops to viewers
+          try {
+            wsClient?.socket?.send?.(JSON.stringify({
+              type: 'ops',
+              seq: ++seq,
+              ops
+            }));
+          } catch {}
+        }
+        // Optional: legacy/visual consumers
+        try { window.consumeInfo?.(normalizeInfo(raw)); } catch {}
+      } catch (e) {
+        // Never throw from WS callback
+        console.warn('[host onInfo] pipeline error', e);
+        try { window.consumeInfo?.(normalizeInfo(raw)); } catch {}
+      }
+    },
+
+    // Keep OG onMessage behavior and also capture map:sync
+    onMessage: (msg) => {
+      // OG: noteSync
+      noteSync(msg);
+
+      // Optional future: if server returns acks for ops, handle here.
+      // if (msg?.type === 'ops:ack') { /* no-op for now */ }
+    },
   });
+
   if (typeof window !== 'undefined') window.wsClient = wsClient;
 
-  // After connect, ensure the room has the latest map
-  // Sequence:
-  // 1) ask for map
-  // 2) wait ~700ms for server replay
-  // 3) if none came, push local map with key (map:ensure)
+  // ---- OG: ensure server/room has a map after connect (kept) ----
   (async function ensureRoomMap(){
     try { wsClient?.socket?.send?.(JSON.stringify({ type:'map:get' })); } catch {}
     await new Promise(r => setTimeout(r, 700));
-    if (lastSyncKey) return;                 // server already has a map
+    if (lastSyncKey) return; // server already replayed a map
     const local = await loadLocalMap();
-    if (!local) return;                       // nothing to seed
+    if (!local) return;      // nothing to seed
     const key = keyOf(local);
     try {
       wsClient?.socket?.send?.(JSON.stringify({ type:'map:ensure', map: local, key }));
@@ -91,7 +137,7 @@ import { getWSURL } from '/src/roles.js';
     }
   })();
 
-  // Also ensure map after any reconnect (one-shot)
+  // ---- OG: one-shot ensure after first reconnect (kept) ----
   let tried = 0;
   const t = setInterval(() => {
     const s = wsClient?.socket;
