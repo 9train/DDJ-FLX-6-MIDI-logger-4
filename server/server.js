@@ -13,6 +13,11 @@
 //   - Stable key hashing for change detection (djb2 of canonical JSON)
 //   - Supports {type:'map:set'},{type:'map:ensure'},{type:'map:get'}
 //   - Sends {type:'map:sync', map, key} to viewers (raw, not wrapped)
+//
+// NEW (SOP): Room-scoped live state mirroring via ops
+//   - getRoom() now holds state: Map(target -> {on,intensity})
+//   - Host can send {type:'ops', ops:[...]} to update server snapshot and broadcast to viewers
+//   - Any client can request {type:'state:get'} to receive {type:'state:full', ops:[...]}
 
 import path from 'path';
 import express from 'express';
@@ -122,7 +127,7 @@ function broadcast(obj) {
 }
 
 // === Rooms with presence + lastMap (+ lastKey) ==============================
-// roomName -> { hosts:Set<WebSocket>, viewers:Set<WebSocket>, lastMap:Array|null, lastKey:string|null }
+// roomName -> { hosts:Set<WebSocket>, viewers:Set<WebSocket>, lastMap:Array|null, lastKey:string|null, state:Map }
 const rooms = new Map();
 
 function getRoom(roomName) {
@@ -132,9 +137,29 @@ function getRoom(roomName) {
       viewers: new Set(),
       lastMap: null,
       lastKey: null,
+      state:   new Map(), // <- live UI state (target -> {on,intensity})
     });
   }
   return rooms.get(roomName);
+}
+
+// === OPS state helpers (viewer mirroring) ====================================
+function applyOpsToState(stateMap, ops){
+  for (const op of ops || []) {
+    if (op && op.type === 'light' && op.target) {
+      if (op.on) stateMap.set(op.target, { on:true, intensity: op.intensity ?? 1 });
+      else stateMap.delete(op.target);
+    }
+  }
+}
+
+function stateToOps(stateMap){
+  return [...stateMap.entries()].map(([target, st]) => ({
+    type: 'light',
+    target,
+    on: !!st.on,
+    intensity: st.intensity ?? 1
+  }));
 }
 
 // Presence broadcast
@@ -167,7 +192,7 @@ function broadcastToViewers_wrapped(room, payload, exceptWs) {
   }
 }
 
-// NEW (SOP): raw viewer broadcast (no wrapping) for map:sync, etc.
+// NEW (SOP): raw viewer broadcast (no wrapping) for map:sync, ops, etc.
 function broadcastToViewers_raw(room, obj, exceptWs) {
   const msg = JSON.stringify(obj);
   for (const client of wss.clients) {
@@ -339,6 +364,22 @@ wss.on('connection', (ws, req) => {
 
     // App-level ping (protocol ping/pong preferred, kept for compatibility)
     if (msg.type === 'ping') { return; }
+
+    // === HOST -> OPS: update room snapshot and broadcast to viewers ==========
+    if (ws.role === 'host' && msg.type === 'ops' && Array.isArray(msg.ops)) {
+      const r = getRoom(ws.room);
+      applyOpsToState(r.state, msg.ops);
+      // broadcast raw (no wrapping) so viewers can apply directly
+      broadcastToViewers_raw(ws.room, { type: 'ops', seq: msg.seq, ops: msg.ops }, ws);
+      return;
+    }
+
+    // === VIEWER -> request full state explicitly (optional safety) ==========
+    if (msg.type === 'state:get') {
+      const r = getRoom(ws.room || 'default');
+      send(ws, { type: 'state:full', ops: stateToOps(r.state) });
+      return;
+    }
 
     // === Map set/ensure/get/sync ============================================
     // Host sets/ensures map for room
