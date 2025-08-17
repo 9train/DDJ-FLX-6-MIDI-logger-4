@@ -6,16 +6,14 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="stylesheet" href="./styles.css" />
 
-<script>
-  window.WS_URL = "wss://ws.setsoutofcontext.com";
-</script>
-
-  <!-- SOP ADD: Force the correct secure WS endpoint for all devices/browsers -->
+  <!-- =========================
+       SOP ADD: Force the correct secure WS endpoint for all devices/browsers
+       - Set WS_FORCE=true to lock the URL below and prevent roles.js overrides.
+       - If you want querystring or roles.js to control the URL, set WS_FORCE=false.
+       ========================= -->
   <script>
-    // Set to true to lock the URL below and prevent roles.js from overriding it.
-    // Set to false to allow roles.js or querystring to determine the URL.
     window.WS_FORCE = true;
-    window.WS_URL   = "wss://ws.setsoutofcontext.com"; // TODO: replace with your real WSS endpoint
+    window.WS_URL   = "wss://ws.setsoutofcontext.com"; // set your real WSS endpoint
   </script>
 
   <!-- Viewer hard hide (CSS only, no module edits) -->
@@ -77,9 +75,8 @@
   <!-- Stage for the SVG board -->
   <section id="boardHost" aria-label="Controller visual"></section>
 
-  <!-- Default WS endpoint; roles.js can also auto-derive ws.* from visual.* -->
+  <!-- Default WS endpoint fallback (kept as a no-op when WS_FORCE=true) -->
   <script>
-    // Keep as fallback; SOP force above already sets WS_URL.
     window.WS_URL = window.WS_URL || "wss://ws.setsoutofcontext.com";
   </script>
 
@@ -90,21 +87,22 @@
     import { initBoard, consumeInfo as boardConsume, getUnifiedMap } from '/src/board.js';
     import * as THEME from '/src/theme.js';
     import { connectWS } from '/src/ws.js';
-    import { getWSURL } from '/src/roles.js';  // SOP add
+    import { getWSURL } from '/src/roles.js';
 
     /****************************************************************
      * Force viewer role + WS URL resolution
      ****************************************************************/
-    let role = 'viewer';
+    const ROLE = 'viewer'; // SOP: avoid global 'role' name collision
     let wsURL = window.WS_URL;
 
     try {
-      // SOP: If WS_FORCE is true, we do NOT allow roles.js to change the URL.
+      // If WS_FORCE is true, we do NOT allow roles.js to change the URL.
       if (!(window.WS_FORCE && window.WS_URL)) {
         const mod = await import('/src/roles.js');
         if (mod?.getWSURL) wsURL = mod.getWSURL();
       }
     } catch {
+      // Last-resort derivation using querystring or default localhost
       const qs = new URLSearchParams(location.search);
       if (!wsURL) {
         const host = location.hostname || 'localhost';
@@ -112,9 +110,9 @@
       }
     }
 
-    document.body.classList.add(role);
-    document.body.dataset.role = role;
-    window.FLX_ROLE = role;
+    document.body.classList.add(ROLE);
+    document.body.dataset.role = ROLE;
+    window.FLX_ROLE = ROLE;
 
     /****************************************************************
      * Init: board + Theme (Shift+T toggles Theme)
@@ -129,7 +127,7 @@
     window.consumeInfo = baseConsume;
 
     /****************************************************************
-     * MINI NORMALIZER (SOP addition)
+     * SOP ADD: MINI NORMALIZER
      * Normalizes incoming WS info shapes before rendering.
      ****************************************************************/
     function normalizeInfo(x) {
@@ -170,7 +168,7 @@
         return info;
       }
 
-      // Pass-through other event types unchanged
+      // Passthrough for other types
       return info;
     }
 
@@ -178,61 +176,55 @@
      * Status helpers
      ****************************************************************/
     const wsStatusEl = document.getElementById('wsStatus');
-    const setWSStatus = (s) => { if (wsStatusEl) wsStatusEl.textContent = 'WS: ' + s; };
+    window.setWSStatus = (s) => { if (wsStatusEl) wsStatusEl.textContent = 'WS: ' + s; };
 
-    <!-- ===== SOP: WebSocket (viewer) replacement (isolated, no name collisions) ===== -->
-<script type="module">
-  import { connectWS } from '/src/ws.js';
-  import { getWSURL } from '/src/roles.js';
+    /****************************************************************
+     * ===== SOP: WebSocket (viewer) — isolated, no collisions =====
+     * This integrates your requested snippet, adapted to the OG file:
+     *  - Uses ROLE instead of a global 'role'
+     *  - Uses existing normalizeInfo() + setWSStatus()
+     *  - Exposes window.wsClient for console diagnostics
+     ****************************************************************/
+    (() => {
+      const WS_ROLE = ROLE; // 'viewer'
+      const resolvedURL = (window.WS_URL && String(window.WS_URL)) || wsURL || getWSURL();
 
-  // normalizeInfo() and setWSStatus() should already exist in this file.
+      const qs   = new URLSearchParams(location.search);
+      const room = qs.get('room') || 'default';
 
-  (() => {
-    const WS_ROLE = 'viewer'; // renamed to avoid 'role' collisions
-    const wsURL = (window.WS_URL && String(window.WS_URL)) || getWSURL();
+      const wsClient = connectWS({
+        url: resolvedURL,
+        role: WS_ROLE,
+        room,
+        onInfo: (info) => window.consumeInfo?.(normalizeInfo(info)),
+        onStatus: (s)  => window.setWSStatus?.(s),
+      });
 
-    const qs   = new URLSearchParams(location.search);
-    const room = qs.get('room') || 'default';
-
-    const wsClient = connectWS({
-      url: wsURL,
-      role: WS_ROLE,
-      room,
-      onInfo: (info) => window.consumeInfo?.(normalizeInfo(info)),
-      onStatus: (s) => window.setWSStatus?.(s),
-    });
-
-    window.wsClient = wsClient; // for console debugging
-  })();
-</script>
+      window.wsClient = wsClient; // for console/diagnostics
+    })();
 
     /****************************************************************
      * SOP ADD: Probe responder (viewer)
-     * - Listens for {type:'probe', id} from the server/host
-     * - Replies with {type:'probe:ack', id} using the same socket
-     * - Re-attaches on every socket 'open' to survive reconnects
+     * - Listens for {type:'probe', id} and replies {type:'probe:ack', id}
      ****************************************************************/
     function installProbeAck(ws) {
       if (!ws) return;
-      // Avoid double-install by tagging the socket
       if (ws.__probeAckInstalled) return;
       ws.__probeAckInstalled = true;
 
       ws.addEventListener('message', (e) => {
         let m; try { m = JSON.parse(e.data); } catch {}
         if (m?.type === 'probe' && m.id) {
-          try {
-            ws.send(JSON.stringify({ type: 'probe:ack', id: m.id }));
-          } catch {}
+          try { ws.send(JSON.stringify({ type:'probe:ack', id: m.id })); } catch {}
         }
       });
     }
 
-    // Install now if socket is present
-    installProbeAck(wsClient?.socket);
-
-    // Also re-install on each (re)open to handle new socket instances
-    wsClient?.socket?.addEventListener('open', () => installProbeAck(wsClient.socket));
+    // Try now and on re-open (if connectWS exposes socket later)
+    if (window.wsClient?.socket) installProbeAck(window.wsClient.socket);
+    window.addEventListener('flx:ws-open', () => {
+      if (window.wsClient?.socket) installProbeAck(window.wsClient.socket);
+    });
 
     /****************************************************************
      * Recorder: Load/Play/Stop only (viewer)
