@@ -66,6 +66,7 @@
     import * as WIZ     from '/src/wizard.js';
     import { initLauncher } from '/src/launcher.js';
     import { loadMappings } from '/src/mapper.js';
+    import { getWSURL } from '/src/roles.js';  // SOP add
 
     /****************************************************************
      * Force host role + WS URL resolution
@@ -111,15 +112,27 @@
     const setMIDIStatus = (s) => { if (midiStatusEl) midiStatusEl.textContent = 'MIDI: ' + s; };
 
     /****************************************************************
-     * WebSocket (host)
-     ****************************************************************/
-    const wsClient = connectWS({
-      url: wsURL,
-      role,
-      onInfo: (info) => window.consumeInfo(info),
-      onStatus: (s) => setWSStatus(s),
-    });
-    window.wsClient = wsClient;
+ * WebSocket (host) — SOP replacement
+ * - Force role='host'
+ * - Resolve WS URL via getWSURL() (overridden by window.WS_URL if present)
+ * - Read room from URL (?room=…) with fallback 'default'
+ * - Pass {role, room} to connectWS so the server can scope messages
+ ****************************************************************/
+const role = 'host';
+const wsURL = (window.WS_URL && String(window.WS_URL)) || getWSURL();
+
+// derive room once from querystring (default='default')
+const qs   = new URLSearchParams(location.search);
+const room = qs.get('room') || 'default';
+
+const wsClient = connectWS({
+  url: wsURL,
+  role,
+  room,
+  onInfo: (info) => window.consumeInfo(info),
+  onStatus: (s) => setWSStatus(s),
+});
+window.wsClient = wsClient; // expose for console/diagnostics
 
     /* ===================== SOP ADD: viewer probe (host -> viewers) ===================== *
      * Your requested snippet fires a one-shot probe immediately.
