@@ -18,6 +18,7 @@
 //   - getRoom() now holds state: Map(target -> {on,intensity})
 //   - Host can send {type:'ops', ops:[...]} to update server snapshot and broadcast to viewers
 //   - Any client can request {type:'state:get'} to receive {type:'state:full', ops:[...]}
+//   - Viewer receives {type:'state:full'} automatically on join
 
 import path from 'path';
 import express from 'express';
@@ -53,7 +54,6 @@ const SINGLE_PORT =
 const WSPORT = Number(WSPORT_ENV ?? (SINGLE_PORT ? PORT : 8787));
 
 // ---- Optional Origin allow-list (non-breaking by default)
-// ENV support (original)
 const SINGLE_ALLOWED = process.env.ALLOWED_ORIGIN?.trim();
 const MULTI_ALLOWED  = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
@@ -319,6 +319,12 @@ wss.on('connection', (ws, req) => {
     send(ws, { type: 'map:sync', room: ws.room, map: r0.lastMap, key: r0.lastKey });
   }
 
+  // **SOP ADD**: If a viewer connects, send full live state snapshot right away
+  if (ws.role === 'viewer') {
+    const opsSnap = stateToOps(r0.state);
+    send(ws, { type: 'state:full', ops: opsSnap });
+  }
+
   // Notify room about updated presence
   broadcastPresence(ws.room);
 
@@ -358,6 +364,12 @@ wss.on('connection', (ws, req) => {
       // If the room already has a map, sync it to the joining client
       if (r.lastMap && Array.isArray(r.lastMap) && r.lastMap.length) {
         send(ws, { type: 'map:sync', room: ws.room, map: r.lastMap, key: r.lastKey });
+      }
+
+      // **SOP ADD**: if a viewer just joined, also send current live state
+      if (ws.role === 'viewer') {
+        const opsSnap = stateToOps(r.state);
+        send(ws, { type: 'state:full', ops: opsSnap });
       }
       return;
     }
