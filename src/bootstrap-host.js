@@ -21,8 +21,9 @@ import { getWSURL } from '/src/roles.js';
   // simple stable hash for versions
   function keyOf(mapArr){
     const s = JSON.stringify(mapArr || []);
-    let h=5381; for (let i=0;i<s.length;i++) h=((h<<5)+h) ^ s.charCodeAt(i);
-    return String(h>>>0);
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) + h) ^ s.charCodeAt(i);
+    return String(h >>> 0);
   }
 
   async function loadLocalMap(){
@@ -36,7 +37,7 @@ import { getWSURL } from '/src/roles.js';
     } catch {}
     // 2) static file as fallback
     try {
-      const r = await fetch('/learned_map.json', { cache:'no-store' });
+      const r = await fetch('/learned_map.json', { cache: 'no-store' });
       if (r.ok) {
         const m = await r.json();
         if (Array.isArray(m) && m.length) return m;
@@ -46,14 +47,16 @@ import { getWSURL } from '/src/roles.js';
   }
 
   let lastSyncKey = null;
+
   function noteSync(msg){
     if (msg?.type === 'map:sync' && Array.isArray(msg.map)) {
+      // record we have a server map
       lastSyncKey = msg.key || keyOf(msg.map);
       // expose current map globally for consumers
-      window.__currentMap = msg.map;
-      // persist locally
+      try { window.__currentMap = msg.map; } catch {}
+      // persist locally for future boots / offline
       try { localStorage.setItem('learned_map', JSON.stringify(msg.map)); } catch {}
-      // optional: notify listeners something changed
+      // notify listeners
       try { window.dispatchEvent(new CustomEvent('flx:map-updated')); } catch {}
     }
   }
@@ -64,7 +67,7 @@ import { getWSURL } from '/src/roles.js';
     room,
     onInfo:   (info) => { try { window.consumeInfo?.(info); } catch {} },
     onStatus: (s)   => { try { window.setWSStatus?.(s); } catch {} },
-    onMessage: (msg) => noteSync(msg),
+    onMessage: (msg)=> noteSync(msg),
   });
   if (typeof window !== 'undefined') window.wsClient = wsClient;
 
