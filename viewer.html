@@ -180,28 +180,31 @@
     const wsStatusEl = document.getElementById('wsStatus');
     const setWSStatus = (s) => { if (wsStatusEl) wsStatusEl.textContent = 'WS: ' + s; };
 
-    /****************************************************************
- * WebSocket (viewer) — SOP replacement
- * - Force role='viewer'
- * - Resolve WS URL via getWSURL() (overridden by window.WS_URL if present)
- * - Read room from URL (?room=…) with fallback 'default'
- * - Normalize incoming info before consuming
- ****************************************************************/
-const role = 'viewer';
-const wsURL = (window.WS_URL && String(window.WS_URL)) || getWSURL();
+    <!-- ===== SOP: WebSocket (viewer) replacement (isolated, no name collisions) ===== -->
+<script type="module">
+  import { connectWS } from '/src/ws.js';
+  import { getWSURL } from '/src/roles.js';
 
-// derive room once from querystring (default='default')
-const qs   = new URLSearchParams(location.search);
-const room = qs.get('room') || 'default';
+  // normalizeInfo() and setWSStatus() should already exist in this file.
 
-const wsClient = connectWS({
-  url: wsURL,
-  role,
-  room,
-  onInfo: (info) => window.consumeInfo(normalizeInfo(info)),
-  onStatus: (s) => setWSStatus(s),
-});
-window.wsClient = wsClient; // expose for console/diagnostics
+  (() => {
+    const WS_ROLE = 'viewer'; // renamed to avoid 'role' collisions
+    const wsURL = (window.WS_URL && String(window.WS_URL)) || getWSURL();
+
+    const qs   = new URLSearchParams(location.search);
+    const room = qs.get('room') || 'default';
+
+    const wsClient = connectWS({
+      url: wsURL,
+      role: WS_ROLE,
+      room,
+      onInfo: (info) => window.consumeInfo?.(normalizeInfo(info)),
+      onStatus: (s) => window.setWSStatus?.(s),
+    });
+
+    window.wsClient = wsClient; // for console debugging
+  })();
+</script>
 
     /****************************************************************
      * SOP ADD: Probe responder (viewer)
