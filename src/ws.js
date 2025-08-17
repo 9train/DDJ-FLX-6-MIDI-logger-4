@@ -32,6 +32,32 @@ const RECONNECT_MAX_MS = 10000;
 // Keep feature but default to off (0). Set to >0 only if you truly want it.
 const IDLE_KILL_MS = 0;
 
+// --- NEW: tiny helpers for map presence/fallback gating ---
+function markMapApplied() {
+  try { window.__mapAppliedAt = Date.now(); } catch {}
+}
+function hasAppliedMap() {
+  try {
+    if (Array.isArray(window.__currentMap) && window.__currentMap.length > 0) return true;
+    // also consider if we recently set it (timer races)
+    if (window.__mapAppliedAt && (Date.now() - window.__mapAppliedAt) < 60_000) return true;
+  } catch {}
+  return false;
+}
+
+// --- NEW: centralized map applier (used by WS handlers and fallback) ---
+function applyMap(map) {
+  if (!Array.isArray(map) || map.length === 0) return;
+  try { window.__currentMap = map; } catch {}
+  try { localStorage.setItem('learned_map', JSON.stringify(map)); } catch {}
+  try {
+    // board.js / viewer already listens for this
+    window.dispatchEvent(new CustomEvent('flx:remote-map', { detail: map }));
+  } catch {}
+  markMapApplied();
+  try { console.log('[map] applied', map.length, 'entries'); } catch {}
+}
+
 function log(...a){ try{ console.debug('[WS]', ...a);}catch{} }
 
 function addQuery(u, params){
@@ -146,12 +172,18 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
       try { ws.send(JSON.stringify({ type:'hello', role })); } catch {}
       try { ws.send(JSON.stringify({ type:'join',  role, room })); } catch {}
 
-      // Ask for map immediately to cover race with host map push
+      // === IMPORTANT: Ask for map immediately (viewer) ===
+      // Covers races with host push and ensures initial replay.
       try { ws.send(JSON.stringify({ type:'map:get' })); } catch {}
 
       startPing(ws);
       bumpIdleKill(ws);
       reconnectAttempts = 0; // success => reset backoff
+
+      // --- NEW: install the one-shot fallback loader (viewer only) ---
+      try {
+        if (role === 'viewer') maybeInstallFallbackOnce();
+      } catch {}
     });
 
     ws.addEventListener('message', (ev)=>{
@@ -192,21 +224,15 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
         try { window.FLX_MONITOR_HOOK?.(norm); } catch {}
       }
 
-      // Remote map support — accept BOTH shapes (viewer only)
+      // --- Map handling (viewer) — accept BOTH shapes, then applyMap() ---
       if (role === 'viewer') {
         // New server shape: { type:'map:sync', map:[...] }
-        if (parsed?.type === 'map:sync' && parsed.map) {
-          try {
-            const evx = new CustomEvent('flx:remote-map', { detail: parsed.map });
-            window.dispatchEvent(evx);
-          } catch {}
+        if (parsed?.type === 'map:sync' && Array.isArray(parsed.map)) {
+          applyMap(parsed.map);
         }
         // Legacy relay shape: { type:'map_sync', payload:[...] }
-        else if (parsed?.type === 'map_sync' && parsed.payload) {
-          try {
-            const evx = new CustomEvent('flx:remote-map', { detail: parsed.payload });
-            window.dispatchEvent(evx);
-          } catch {}
+        else if (parsed?.type === 'map_sync' && Array.isArray(parsed.payload)) {
+          applyMap(parsed.payload);
         }
       }
 
@@ -300,6 +326,33 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
   dial();
 
   return client;
+
+  // --- NEW: viewer fallback bootstrap (installed on first 'open') ---
+  function maybeInstallFallbackOnce(){
+    try {
+      if (window.__fallbackInstalled) return;
+      window.__fallbackInstalled = true;
+
+      // Allow opting out globally if you really don't want this in some launchers
+      if (window.WS_DISABLE_FALLBACK === true) return;
+
+      const START = Date.now();
+      const TRY_AFTER_MS = 1200;
+
+      setTimeout(async () => {
+        try {
+          if (hasAppliedMap()) return; // WS replay already delivered
+          const r = await fetch('/learned_map.json', { cache: 'no-store' });
+          if (!r.ok) return;
+          const map = await r.json();
+          if (Array.isArray(map) && map.length) {
+            applyMap(map);
+            try { console.log('[fallback-map] applied', map.length, 'entries after', Date.now()-START, 'ms'); } catch {}
+          }
+        } catch { /* silent */ }
+      }, TRY_AFTER_MS);
+    } catch {}
+  }
 }
 
 // === Helpers preserved & harmonized ===
