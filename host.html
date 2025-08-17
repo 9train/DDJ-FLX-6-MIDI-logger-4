@@ -7,6 +7,13 @@
   <link rel="stylesheet" href="./styles.css" />
   <!-- Optional: silence missing favicon 404 -->
   <link rel="icon" href="data:,">
+
+  <!-- SOP ADD: Force the correct secure WS endpoint for all devices/browsers -->
+  <script>
+    // If you want to change environments, update this single line:
+    // e.g., "wss://ws.setsoutofcontext.com"
+    window.WS_URL = "wss://ws.yourdomain.com";
+  </script>
 </head>
 <body class="host">
   <!-- Full host toolbar -->
@@ -34,6 +41,7 @@
 
   <section id="boardHost" aria-label="Controller visual"></section>
 
+  <!-- Keep existing fallback default; it won't override the forced value above -->
   <script>
     window.WS_URL = window.WS_URL || "wss://ws.setsoutofcontext.com";
   </script>
@@ -57,13 +65,15 @@
 
     /****************************************************************
      * Force host role + WS URL resolution
+     * SOP tweak: if window.WS_URL is set (forced), DO NOT let roles.js override it.
      ****************************************************************/
     let role = 'host';
     let wsURL = window.WS_URL;
 
     try {
       const mod = await import('/src/roles.js');
-      if (mod?.getWSURL) wsURL = mod.getWSURL();
+      // Only use roles.js if a forced WS_URL was NOT provided
+      if (!wsURL && mod?.getWSURL) wsURL = mod.getWSURL();
     } catch {
       const qs = new URLSearchParams(location.search);
       if (!wsURL) {
