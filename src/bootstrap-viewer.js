@@ -32,14 +32,14 @@ import { applyOps }  from '/src/engine/ops.js';
   const onMessage = (msg) => {
     if (!msg || typeof msg !== 'object') return;
 
-    // Streaming or batched ops
-    if (msg.type === 'ops' && Array.isArray(msg.ops)) {
+    // Full state snapshot expressed as ops (common on join)
+    if (msg.type === 'state:full' && Array.isArray(msg.ops)) {
       applyOps(msg.ops);
       return;
     }
 
-    // Full state snapshot expressed as ops (common on join)
-    if (msg.type === 'state:full' && Array.isArray(msg.ops)) {
+    // Streaming or batched ops
+    if (msg.type === 'ops' && Array.isArray(msg.ops)) {
       applyOps(msg.ops);
       return;
     }
@@ -105,4 +105,3 @@ import { applyOps }  from '/src/engine/ops.js';
     if (s && !s.__probeAckInstalled) installProbeAck(s);
   }, 500);
 })();
- 
