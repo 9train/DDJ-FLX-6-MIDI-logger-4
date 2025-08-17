@@ -25,11 +25,22 @@ function loadLearned() {
     return t ? JSON.parse(t) : [];
   } catch { return []; }
 }
+
+// MERGED WITH SOP: keep LS_KEY and dispatch, plus push to WS room if available.
 function saveLearned(arr) {
   try { localStorage.setItem(LS_KEY, JSON.stringify(arr)); } catch {}
   // notify runtime to re-merge (board.js listens to this)
   try { window.dispatchEvent(new CustomEvent('flx:map-updated')); } catch {}
+  // NEW (from your snippet): if we're the host and WS is connected, push to the room immediately
+  try {
+    if (window.wsClient?.sendMap) {
+      window.wsClient.sendMap(Array.isArray(arr) ? arr : []);
+    } else if (window.wsClient?.send) {
+      window.wsClient.send({ type:'map:set', map: Array.isArray(arr) ? arr : [], ts: Date.now() });
+    }
+  } catch {}
 }
+
 function upsertLearned(entry) {
   const key = entry.key || makeKey(entry);
   const curr = loadLearned().filter(m => (m.key || makeKey(m)) !== key);
@@ -572,7 +583,7 @@ function onLearn(info, svg) {
   const key = makeKey(info);
   const unified = getUnifiedMap?.() || [];
   const prev = unified.find(m => (m.key === key));
-let sens = 1;
+  let sens = 1;
   if (SENS_INPUT) {
     const parsed = parseFloat(SENS_INPUT.value);
     if (parsed > 0) {
@@ -599,7 +610,7 @@ let sens = 1;
         `Duplicate MIDI key:\n${key}\n\nAlready mapped to: ${prev.target}\nNew target: ${CURRENT_TARGET}\n\nReplace it?`
       );
       if (!ok) return;
-     upsertLearned({ key, target: CURRENT_TARGET, name: CURRENT_TARGET, type: info.type, ch: info.ch, code: (info.controller ?? info.d1), sensitivity: sens });
+      upsertLearned({ key, target: CURRENT_TARGET, name: CURRENT_TARGET, type: info.type, ch: info.ch, code: (info.controller ?? info.d1), sensitivity: sens });
       toast(`Replaced: ${key}\n${prev.target} → ${CURRENT_TARGET}`);
     }
   } else {
