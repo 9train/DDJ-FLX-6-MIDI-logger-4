@@ -1,7 +1,7 @@
 // server/server.js
 // Static web server + WebSocket + optional MIDI→WS bridge (ESM version)
 // SOP merge: integrates rooms + map sync + presence + room-scoped MIDI relay
-// while keeping original behavior (HTTP server, SINGLE_PORT, origin allow-list,
+// while keeping original behavior (HTTP server, origin allow-list,
 // HID/MIDI global broadcast, heartbeat, hello/join/ping).
 //
 // NEW (SOP): Adds probe fan-out & ack collection per room
@@ -15,10 +15,14 @@
 //   - Sends {type:'map:sync', map, key} to viewers (raw, not wrapped)
 //
 // NEW (SOP): Room-scoped live state mirroring via ops
-//   - getRoom() now holds state: Map(target -> {on,intensity})
+//   - getRoom() holds state: Map(target -> {on,intensity})
 //   - Host can send {type:'ops', ops:[...]} to update server snapshot and broadcast to viewers
 //   - Any client can request {type:'state:get'} to receive {type:'state:full', ops:[...]}
 //   - Viewer receives {type:'state:full'} automatically on join
+//
+// SOP EDIT (this request): Share ONE HTTP listener with WS on path /ws
+//   - Eliminates second port and EADDRINUSE problems
+//   - WebSocketServer is created with { server, path:'/ws' }
 
 import path from 'path';
 import express from 'express';
@@ -34,24 +38,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
 // ---- Config (env with sensible defaults)
-const PORT        = Number(process.env.PORT || 8080);
-const HOST        = process.env.HOST || '0.0.0.0'; // bind to all interfaces
-const WSPORT_ENV  = process.env.WSPORT;            // preserve original env override
-const MIDI_INPUT  = process.env.MIDI_INPUT  || ''; // e.g., "DDJ-FLX6"
-const MIDI_OUTPUT = process.env.MIDI_OUTPUT || ''; // unused here, kept for future
+const PORT        = Number(process.env.PORT || 8787);   // keep your preferred port here
+const HOST        = process.env.HOST || '0.0.0.0';      // bind to all interfaces
+const MIDI_INPUT  = process.env.MIDI_INPUT  || '';      // e.g., "DDJ-FLX6"
+const MIDI_OUTPUT = process.env.MIDI_OUTPUT || '';      // unused here, kept for future
 
 // Map persistence (SOP)
 const MAP_FILE = process.env.MAP_FILE || './data/room_maps.json';
-
-// Fly-friendly single port mode: attach WS to the HTTP server (no extra listener).
-// Activates only when explicitly enabled; preserves original behavior otherwise.
-const SINGLE_PORT =
-  process.env.SINGLE_PORT === '1' ||
-  process.env.FLY_IO === '1' ||
-  !!process.env.FLY_MACHINE_ID;
-
-// If SINGLE_PORT, default WS to the same port as HTTP unless explicitly overridden.
-const WSPORT = Number(WSPORT_ENV ?? (SINGLE_PORT ? PORT : 8787));
 
 // ---- Optional Origin allow-list (non-breaking by default)
 const SINGLE_ALLOWED = process.env.ALLOWED_ORIGIN?.trim();
@@ -100,25 +93,19 @@ app.get('/',        (_req, res) => res.status(200).send('ok'));
 // Optional: silence favicon errors
 app.get('/favicon.ico', (_req, res) => res.sendStatus(204));
 
+// Create ONE HTTP server
 const server = http.createServer(app);
+
+// Attach WS to the SAME server (path /ws) — single listener, no second port
+const wss = new WebSocketServer({ server, path: '/ws' });
 
 // --- Listen using process.env.PORT and bind to 0.0.0.0
 server.listen(PORT, HOST, () => {
-  console.log(`[HTTP] Listening on http://${HOST}:${PORT}  (SINGLE_PORT=${SINGLE_PORT ? 'on' : 'off'})`);
+  console.log(`[HTTP] Listening on http://${HOST}:${PORT}`);
+  console.log(`[WS  ] Listening on ws://${HOST}:${PORT}/ws`);
 });
 
-// ---- WebSocket server
-let wss;
-if (SINGLE_PORT) {
-  wss = new WebSocketServer({ server });
-  console.log(`[WS] Attached to HTTP server on ${HOST}:${PORT} (shared port)`);
-} else {
-  wss = new WebSocketServer({ host: HOST, port: WSPORT }, () => {
-    console.log(`[WS] Listening on ws://${HOST}:${WSPORT} (separate port)`);
-  });
-}
-
-// --- Global broadcast helper (original; used by HID/MIDI bridge)
+// --- Global broadcast helper (used by HID/MIDI bridge)
 function broadcast(obj) {
   const msg = JSON.stringify(obj);
   for (const client of wss.clients) {
@@ -145,7 +132,6 @@ function getRoom(roomName) {
 }
 
 // === OPS state helpers (viewer mirroring) ====================================
-// --- SOP: apply incoming ops into snapshot
 function applyOpsToState(stateMap, ops){
   for (const op of ops || []) {
     if (op && op.type === 'light' && op.target) {
@@ -155,7 +141,6 @@ function applyOpsToState(stateMap, ops){
   }
 }
 
-// --- SOP: convert snapshot to ops array for replay
 function stateToOps(stateMap){
   return [...stateMap.entries()].map(([target, st]) => ({
     type: 'light',
@@ -194,7 +179,7 @@ function broadcastToViewers_wrapped(room, payload, exceptWs) {
   }
 }
 
-// NEW (SOP): raw viewer broadcast (no wrapping) for map:sync, ops, etc.
+// Raw viewer broadcast (no wrapping) for map:sync, ops, etc.
 function broadcastToViewers_raw(room, obj, exceptWs) {
   const msg = JSON.stringify(obj);
   for (const client of wss.clients) {
@@ -214,7 +199,7 @@ function send(ws, obj) {
   try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); } catch {}
 }
 
-// === NEW (SOP): Map persistence helpers =====================================
+// === Map persistence helpers ===============================================
 function keyOf(mapArr){
   const s = JSON.stringify(mapArr);
   let h=5381; for (let i=0;i<s.length;i++) h = ((h<<5)+h) ^ s.charCodeAt(i);
@@ -259,7 +244,7 @@ function scheduleSave(){
   }, 200);
 }
 
-// === NEW (SOP): Probe collection state ======================================
+// === Probe collection state ================================================
 const probeCollectors = new Map();
 
 // --- Load persisted maps before accepting traffic ---------------------------
@@ -294,7 +279,7 @@ wss.on('connection', (ws, req) => {
     ws.room = 'default';
   }
 
-  // NEW: per-connection id (used for probe ack dedupe)
+  // Per-connection id (for probe ack dedupe)
   ws.id = `c_${Math.random().toString(36).slice(2, 10)}`;
 
   // Heartbeat
@@ -317,7 +302,7 @@ wss.on('connection', (ws, req) => {
     send(ws, { type: 'map:sync', room: ws.room, map: r0.lastMap, key: r0.lastKey });
   }
 
-  // **SOP ADD**: viewer gets full live state snapshot on join
+  // Viewer gets full live state snapshot on join
   if (ws.role === 'viewer') {
     const opsSnap = stateToOps(r0.state);
     send(ws, { type: 'state:full', ops: opsSnap });
@@ -359,7 +344,7 @@ wss.on('connection', (ws, req) => {
         send(ws, { type: 'map:sync', room: ws.room, map: r.lastMap, key: r.lastKey });
       }
 
-      // **SOP ADD**: send current live state to newly-joined viewer
+      // send current live state to newly-joined viewer
       if (ws.role === 'viewer') {
         const opsSnap = stateToOps(r.state);
         send(ws, { type: 'state:full', ops: opsSnap });
@@ -410,7 +395,7 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
-    // === NEW (SOP): Probe fan-out and summary ================================
+    // === Probe fan-out and summary ==========================================
     if (ws.role === 'host' && msg.type === 'probe' && msg.id) {
       const r = getRoom(ws.room);
       const key = `${ws.room}:${msg.id}`;
