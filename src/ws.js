@@ -52,7 +52,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
   const onStatus  = opts?.onStatus || (()=>{});
   const role      = (opts?.role || 'viewer').toLowerCase();
   const room      = opts?.room || DEFAULT_ROOM;
-  const onMessage = opts?.onMessage; // SOP ADD: generic message surface
+  const onMessage = opts?.onMessage; // generic message surface
 
   // Resolve base URL (respect window.WS_URL like original guidance)
   let base = (opts?.url || (typeof window!=='undefined' && window.WS_URL) || '').trim();
@@ -64,7 +64,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
   base = base.replace(/\/+$/,'');
 
   // Internal state
-  let chosen = null;         // {ws, url}
+  let chosen = null;         // { ws, url }
   let reconnectAttempts = 0;
   let closedByUs = false;
 
@@ -91,14 +91,12 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
     },
 
     // Host-only: send a full mapping array
-    // SOP CHANGE: use {type:'map:set', map:[...]} for new server, but we also
-    // fallback to legacy {type:'map_sync', payload:[...]} if server didn’t ack.
+    // Uses {type:'map:set', map:[...]} for new server.
     sendMap: (arr)=>{
       if (role !== 'host') return false;
       const mapArr = Array.isArray(arr) ? arr : [];
       try {
         if (client.socket?.readyState === WebSocket.OPEN) {
-          // Preferred new shape:
           client.socket.send(JSON.stringify({ type:'map:set', map: mapArr }));
           return true;
         }
@@ -148,7 +146,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
       try { ws.send(JSON.stringify({ type:'hello', role })); } catch {}
       try { ws.send(JSON.stringify({ type:'join',  role, room })); } catch {}
 
-      // SOP ADD: ask for map immediately to cover race with host map push
+      // Ask for map immediately to cover race with host map push
       try { ws.send(JSON.stringify({ type:'map:get' })); } catch {}
 
       startPing(ws);
@@ -194,7 +192,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
         try { window.FLX_MONITOR_HOOK?.(norm); } catch {}
       }
 
-      // SOP: Remote map support — accept BOTH shapes (viewer only)
+      // Remote map support — accept BOTH shapes (viewer only)
       if (role === 'viewer') {
         // New server shape: { type:'map:sync', map:[...] }
         if (parsed?.type === 'map:sync' && parsed.map) {
@@ -212,7 +210,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
         }
       }
 
-      // SOP ADD: surface everything to optional generic handler (fires after onInfo pipeline)
+      // Surface everything to optional generic handler (fires after onInfo pipeline)
       try { onMessage && onMessage(parsed); } catch {}
     });
 
@@ -255,7 +253,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
       settleTimer = setTimeout(()=>{
         if (settled) return;
         settled = true;
-        onDone({ ws, url });
+        onDone({ ws, url: urlWithPath });
       }, SETTLE_MS);
     });
 
@@ -276,7 +274,7 @@ export function connectWS(urlOrOpts = 'ws://localhost:8787', onInfoPos = () => {
     // If we already have a chosen path, reuse it first
     if (chosen && chosen.url) {
       try {
-        const ws = new WebSocket(chosen.url);
+        const ws = new WebSocket(addQuery(chosen.url, { role, room }));
         wireSocket(ws, chosen.url);
         return;
       } catch {}
