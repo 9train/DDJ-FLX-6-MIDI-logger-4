@@ -188,6 +188,34 @@
     window.wsClient = wsClient;
 
     /****************************************************************
+     * SOP ADD: Probe responder (viewer)
+     * - Listens for {type:'probe', id} from the server/host
+     * - Replies with {type:'probe:ack', id} using the same socket
+     * - Re-attaches on every socket 'open' to survive reconnects
+     ****************************************************************/
+    function installProbeAck(ws) {
+      if (!ws) return;
+      // Avoid double-install by tagging the socket
+      if (ws.__probeAckInstalled) return;
+      ws.__probeAckInstalled = true;
+
+      ws.addEventListener('message', (e) => {
+        let m; try { m = JSON.parse(e.data); } catch {}
+        if (m?.type === 'probe' && m.id) {
+          try {
+            ws.send(JSON.stringify({ type: 'probe:ack', id: m.id }));
+          } catch {}
+        }
+      });
+    }
+
+    // Install now if socket is present
+    installProbeAck(wsClient?.socket);
+
+    // Also re-install on each (re)open to handle new socket instances
+    wsClient?.socket?.addEventListener('open', () => installProbeAck(wsClient.socket));
+
+    /****************************************************************
      * Recorder: Load/Play/Stop only (viewer)
      ****************************************************************/
     const $ = (id) => document.getElementById(id);
