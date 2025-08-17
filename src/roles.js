@@ -9,21 +9,19 @@ export function getRole() {
 
 export function getWSURL() {
   const p = new URLSearchParams(location.search);
-  // Querystring override takes precedence (handy for testing)
-  const fromQS = p.get('ws');
-  if (fromQS) return fromQS;
+  const qs = p.get('ws'); // explicit override in the URL
+  if (qs) return qs;
 
   // Environment/global fallback (you can set this in a script tag or inline)
   if (window.WS_URL) return window.WS_URL;
 
-  // Last-resort: try the same host but wss:// and ws.* subdomain
-  // e.g., https://visual.yourdomain.com -> wss://ws.yourdomain.com
   try {
     const u = new URL(location.href);
+    // guess a ws.* sibling; otherwise same host
     const likely = u.hostname.replace(/^visual\./, 'ws.');
     return `wss://${likely}`;
   } catch {
-    // Fallback to your real domain
+    // Last-resort default: real domain
     return `wss://ws.setsoutofcontext.com`;
   }
 }
