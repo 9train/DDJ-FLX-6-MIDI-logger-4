@@ -5,27 +5,29 @@
   <title>FLX6 Visualizer — Viewer</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="stylesheet" href="/styles.css" />
-
-  <!-- Force your actual WS relay (override any guessing) -->
-  <script>
-    window.WS_URL = "wss://ws.setsoutofcontext.com";
-    // If you ever want to forbid auto-guessing from roles.js, set WS_FORCE = true
-    // window.WS_FORCE = true;
-  </script>
-
-  <!-- Viewer-only UI trim: keep Load/Play/Stop, hide host tooling -->
   <style>
+    /* Ultra-minimal viewer popup trim: hide host-only controls */
+    body.viewer #fabSheet [data-act="toggleDiag"],
+    body.viewer #fabSheet [data-act="toggleTime"],
+    body.viewer #fabSheet [data-act="toggleWizard"],
+    body.viewer #fabSheet [data-act="toggleEdit"],
+    body.viewer #fabSheet [data-act="recStart"],
+    body.viewer #fabSheet [data-act="recSave"],
+    body.viewer #fabSheet .fab-section:has(#fabPresetMount) {
+      display: none !important;
+    }
+
+    /* Viewer-only UI trim: keep Load/Play/Stop, hide host tooling redundancies */
     body.viewer #recStart,
     body.viewer #recSave { display: none !important; }
 
     /* Ensure lit elements are clearly visible */
     [data-lit="1"], .lit {
       opacity: 1 !important;
-      /* If your skin relies on currentColor, keep this */
       color: rgb(0, 234, 255);
     }
 
-    /* Hide host-only panels/menus/timelines if anything tries to inject them */
+    /* Hide any injected host-only panels/timelines */
     body.viewer .panel,
     body.viewer [data-panel],
     body.viewer .wizard,
@@ -35,6 +37,13 @@
     /* Stage sizing; .fill toggled by the Fill button */
     #boardHost { width: 100vw; height: 100vh; }
   </style>
+
+  <!-- Force your actual WS relay (override any guessing) -->
+  <script>
+    window.WS_URL = "wss://ws.setsoutofcontext.com";
+    // If you ever want to forbid auto-guessing from roles.js, set WS_FORCE = true
+    // window.WS_FORCE = true;
+  </script>
 </head>
 <body class="viewer">
   <!-- Top toolbar (explicit viewer controls kept) -->
@@ -109,6 +118,9 @@
 
     // Recorder: Load/Play/Stop only (viewer)
     const $ = (id) => document.getElementById(id);
+
+    // We still expose window.recorder if /src/recorder.js is present,
+    // so the toolbar continues to work exactly like OG.
     try {
       const { recorder: FLXRec } = await import('/src/recorder.js');
       window.recorder = FLXRec;
@@ -130,53 +142,51 @@
     $('fill')    ?.addEventListener('click',  () => stage.classList.add('fill'));
     $('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
 
-    // === Launcher (corner menu) — SOP merge of your snippet ==================
-    // Keeps only: Theme toggle, Fit/Fill, Toggle BG, Recorder Load/Play/Stop.
+    // === Launcher (corner menu) — SOP MERGE of YOUR SNIPPET ==================
+    // - Uses your lazy-import actions (recLoadText, recPlay, recStop).
+    // - Adds a small helper recLoad(file) that forwards to recLoadText(text).
+    // - Keeps viewer-only scope (no presets).
     try {
       const { initLauncher } = await import('/src/launcher.js');
 
       initLauncher({
         actions: {
-          // Keep Themes in viewer (you requested Themes be retained)
-          toggleTheme: () => THEME.toggle(),
-
-          // View controls
+          // View
           fit:      () => stage.classList.remove('fill'),
           fill:     () => stage.classList.add('fill'),
           toggleBG: () => document.body.classList.toggle('transparent'),
 
-          // Recorder hooks — no Rec/Save in viewer
-          recLoad: async (file) => {
-            const text = await file.text();
-            await window.recorder?.loadFromText(text);
+          // Recorder (viewer: Load/Play/Stop only)
+          recLoadText: async (text) => {
+            const { recorder } = await import('/src/recorder.js');
+            await recorder.loadFromText(text);
           },
-          recPlay: () => window.recorder?.play({ speed: 1.0, loop: false }),
-          recStop: () => window.recorder?.stop(),
+          // Convenience wrapper to accept a File too (no conflict with your API)
+          recLoad: async (file) => {
+            if (!file) return;
+            const text = await file.text();
+            const { recorder } = await import('/src/recorder.js');
+            await recorder.loadFromText(text);
+          },
+          recPlay: async () => {
+            const { recorder } = await import('/src/recorder.js');
+            recorder.play({ speed: 1.0, loop: false });
+          },
+          recStop: async () => {
+            const { recorder } = await import('/src/recorder.js');
+            recorder.stop();
+          },
         },
 
-        // Hide Panels & Presets; keep only View + Recorder (Play/Stop/Load)
-        ui: {
-          showPanels:  false,
-          showPresets: false,
-          recorder: { showStart: false, showSave: false }
-        },
-
-        // No preset mount in viewer
-        mountPresetUI: () => {}
+        // Do not mount presets in viewer
+        mountPresetUI: () => {},
       });
 
-      // Extra hardening in case any host leftovers render:
+      // Extra hardening: remove any stray preset/panel sections if injected
       const kill = (sel) => document.querySelectorAll(sel).forEach(el => el.remove());
       kill('#launcher .section-panels, .launcher .section-panels');
       kill('#launcher .section--presets, .launcher .section--presets, #launcher .section-presets, .launcher .section-presets');
       kill('[data-action="toggleDiag"], [data-action="toggleTimeline"], [data-action="toggleWizard"], [data-action="toggleEdit"]');
-      Array.from(document.querySelectorAll('#launcher button, .launcher button')).forEach(btn=>{
-        const t = (btn.textContent || '').trim().toLowerCase();
-        if (t === 'rec' || t === 'save') btn.remove();
-      });
-      Array.from(document.querySelectorAll('#launcher h2, .launcher h2')).forEach(h=>{
-        if ((h.textContent||'').trim().toLowerCase()==='presets') h.remove();
-      });
     } catch (e) {
       console.warn('[viewer] launcher unavailable', e);
     }
