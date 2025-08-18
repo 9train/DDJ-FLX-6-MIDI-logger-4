@@ -1,23 +1,24 @@
 // /src/bootstrap-host.js
-// SOP MERGE: Keep OG map bootstrap/ensure + add OPS pipeline.
+// SOP MERGE: Keep OG map bootstrap/ensure + add OPS pipeline + test helpers.
 // - Preserves:
 //   • role/url/room wiring
 //   • localStorage + /learned_map.json fallback
 //   • map:get → map:sync handling and persistence
 //   • one-shot ensure after connect and after first reconnect
 // - Adds (from your snippet):
-//   • imports for applyOps, infoToOps, getUnifiedMap, normalizeInfo
+//   • imports for applyOps, installTestHelpers, infoToOps, getUnifiedMap, normalizeInfo
 //   • onInfo pipeline: normalize→infoToOps(map)→applyOps locally→broadcast {type:'ops', seq, ops}
-//   • still forwards normalized raw info to window.consumeInfo if you want existing visuals
+//   • optional forward of normalized raw info to window.consumeInfo (back-compat visuals)
+//   • manual helpers via installTestHelpers(); window.sendOps(ops) debug bypass
 //
 // Net effect: Host board updates immediately and viewers receive compact ops in-order.
 
-import { connectWS }     from '/src/ws.js';
-import { getWSURL }      from '/src/roles.js';
-import { applyOps }      from '/src/engine/ops.js';
-import { infoToOps }     from '/src/engine/dispatcher.js';
-import { getUnifiedMap } from '/src/board.js';
-import { normalizeInfo } from '/src/engine/normalize.js';
+import { connectWS }          from '/src/ws.js';
+import { getWSURL }           from '/src/roles.js';
+import { applyOps, installTestHelpers } from '/src/engine/ops.js';
+import { infoToOps }          from '/src/engine/dispatcher.js';
+import { getUnifiedMap }      from '/src/board.js';
+import { normalizeInfo }      from '/src/engine/normalize.js';
 
 (function hostBootstrap(){
   const WS_ROLE = 'host';
@@ -79,11 +80,6 @@ import { normalizeInfo } from '/src/engine/normalize.js';
     onStatus: (s) => { try { window.setWSStatus?.(s); } catch {} },
 
     // === NEW OPS PIPELINE (from your snippet) ===
-    // - Incoming raw host "info" (e.g., MIDI/controller change)
-    //   1) derive ops using current unified map
-    //   2) apply locally on host (immediate visual/logic)
-    //   3) broadcast ops to viewers with increasing seq
-    //   4) (optional) still forward normalized info to existing UI
     onInfo: (raw) => {
       try {
         const map = getUnifiedMap() || [];
@@ -113,8 +109,7 @@ import { normalizeInfo } from '/src/engine/normalize.js';
     onMessage: (msg) => {
       // OG: noteSync
       noteSync(msg);
-
-      // Optional future: if server returns acks for ops, handle here.
+      // Optional: ops acknowledgements in the future
       // if (msg?.type === 'ops:ack') { /* no-op for now */ }
     },
   });
@@ -160,4 +155,22 @@ import { normalizeInfo } from '/src/engine/normalize.js';
     }
     if (tried > 1) clearInterval(t);
   }, 800);
+
+  // ---- NEW: Manual helpers and debug sender (from your snippet) ----
+  try { installTestHelpers(); } catch (e) {
+    console.warn('[host] installTestHelpers failed (non-fatal)', e);
+  }
+
+  // Optional: expose a debug sender that bypasses MIDI
+  try {
+    window.sendOps = (ops) => {
+      try {
+        seq += 1;
+        wsClient?.socket?.send?.(JSON.stringify({ type:'ops', seq, ops }));
+      } catch (e) {
+        console.warn('[host] sendOps WS send failed', e);
+      }
+      try { applyOps(ops); } catch {}
+    };
+  } catch {}
 })();
