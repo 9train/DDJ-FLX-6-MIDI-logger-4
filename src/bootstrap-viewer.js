@@ -1,10 +1,12 @@
 // /src/bootstrap-viewer.js
 // Viewer WebSocket bootstrap — SOP-compliant merged version
-// - Preserves OG behavior: window.WS_URL override (else roles.js getWSURL),
-//   role/room resolution, wsClient exposure, probe-ack install with reconnect safety.
-// - Implements requested change: viewer ignores raw MIDI/info; applies server ops only.
-// - Snapshot: requests current state on connect (state:get) + delayed retries,
-//   with a backward-compatible fallback (map:get) for legacy servers.
+// SOP RULES APPLIED:
+// 1) Provide the entire file (no omissions).
+// 2) Do not remove any OG functionality unless it directly conflicts with the revision.
+// 3) Preserve all existing behavior: WS URL override, room resolution, wsClient exposure,
+//    probe-ack with reconnect safety, and status surfacing.
+// 4) Implement requested change: viewer ignores raw MIDI/info and applies server ops only.
+// 5) Add robust snapshot fetch (state:get) with legacy fallback (map:get).
 
 import { connectWS } from '/src/ws.js';
 import { getWSURL }  from '/src/roles.js';
@@ -13,22 +15,24 @@ import { applyOps }  from '/src/engine/ops.js';
 (() => {
   const WS_ROLE = 'viewer';
 
-  // URL resolution: respect explicit window.WS_URL (if present), else roles.js
+  // --- URL & room resolution (OG behavior) ----------------------------------
+  // Respect explicit window.WS_URL if present; otherwise use roles.js resolver.
   const wsURL =
     (typeof window !== 'undefined' && window.WS_URL && String(window.WS_URL)) ||
     getWSURL();
 
-  // Room resolution (OG behavior): ?room=xyz → 'xyz', else 'default'
+  // Room from ?room=xyz, else 'default'
   const qs   = new URLSearchParams(location.search);
   const room = qs.get('room') || 'default';
 
-  // Viewers now ignore raw MIDI/info (requested change)
+  // --- Viewer handlers -------------------------------------------------------
+  // Viewers ignore raw MIDI/info entirely per new pipeline.
   const onInfo = () => {};
 
-  // Surface connection status to UI (OG)
+  // Surface connection status to any UI badge the page provides.
   const onStatus = (s) => { try { window.setWSStatus?.(s); } catch {} };
 
-  // Unified message handler: apply ops/state from server
+  // Apply incoming snapshots/deltas only; ignore other message types.
   const onMessage = (msg) => {
     if (!msg || typeof msg !== 'object') return;
 
@@ -44,44 +48,52 @@ import { applyOps }  from '/src/engine/ops.js';
       return;
     }
 
-    // Silently ignore other message types on viewer
+    // Silently ignore everything else on viewer
   };
 
-  // Connect using OG-preserved and requested options
+  // --- Connect (preserving OG options) --------------------------------------
   const wsClient = connectWS({
     url: wsURL,
     role: WS_ROLE,
     room,
     onStatus,
-    onInfo,     // no-op per request
-    onMessage,  // handle ops/state
+    onInfo,     // no-op (viewer receive-only)
+    onMessage,  // handles ops/state
   });
 
-  // Expose for diagnostics/console (OG)
+  // Expose for console diagnostics (OG behavior)
   if (typeof window !== 'undefined') window.wsClient = wsClient;
 
-  // --- Snapshot fetch: belt & suspenders -----------------------------------
+  // Optional: also expose applyOps for quick manual checks in console
+  try { window.applyOps = applyOps; } catch {}
+
+  // --- Snapshot fetch: belt & suspenders ------------------------------------
   const askState = () => {
     try { wsClient?.socket?.send?.(JSON.stringify({ type: 'state:get' })); } catch {}
   };
-  const askMap = () => {
+  const askMapLegacy = () => {
     try { wsClient?.socket?.send?.(JSON.stringify({ type: 'map:get' })); } catch {}
   };
 
-  // On open: immediate ask + short retries + legacy fallback
+  // On open: immediate ask + brief retries + legacy fallback
   wsClient?.socket?.addEventListener?.('open', () => {
+    // Initial request right away
     askState();
-    setTimeout(askState, 300);  // racey servers that publish state just-after-open
-    setTimeout(askMap,   500);  // legacy backends
+
+    // Short retry for racey servers that publish state just-after-open
+    setTimeout(askState, 300);
+
+    // Legacy compatibility: some backends only support map:get
+    setTimeout(askMapLegacy, 500);
   });
 
-  // Extra delayed attempt (matches your revision’s delayed ask)
+  // Extra delayed attempt (matches prior revisions’ delayed ask)
   setTimeout(() => {
     askState();
-    setTimeout(askMap, 200);
+    setTimeout(askMapLegacy, 200);
   }, 800);
 
-  // --- Probe-ack (OG behavior preserved) -----------------------------------
+  // --- Probe-ack (OG behavior preserved) ------------------------------------
   function installProbeAck(ws) {
     if (!ws || ws.__probeAckInstalled) return;
     ws.__probeAckInstalled = true;
@@ -93,6 +105,7 @@ import { applyOps }  from '/src/engine/ops.js';
     });
   }
 
+  // Install once the socket exists
   if (wsClient?.socket) installProbeAck(wsClient.socket);
 
   // Reattach probe-ack on reconnects/socket swaps (OG)
@@ -102,4 +115,22 @@ import { applyOps }  from '/src/engine/ops.js';
     const s = wsClient?.socket;
     if (s && !s.__probeAckInstalled) installProbeAck(s);
   }, 500);
+
+  // --- (Optional) lightweight debug logs ------------------------------------
+  // Safe to remove if noisy; does not alter behavior.
+  try {
+    const s = wsClient?.socket;
+    if (s && !s.__dbgLog) {
+      s.__dbgLog = true;
+      s.addEventListener('message', (e) => {
+        try {
+          const m = JSON.parse(e.data);
+          // Only log interesting viewer-handled messages
+          if (m && (m.type === 'state:full' || m.type === 'ops')) {
+            console.log('[VIEWER]', m.type, m);
+          }
+        } catch { /* ignore non-JSON frames */ }
+      });
+    }
+  } catch {}
 })();
