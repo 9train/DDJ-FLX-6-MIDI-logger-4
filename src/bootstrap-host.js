@@ -19,6 +19,7 @@ import { applyOps, installTestHelpers } from '/src/engine/ops.js';
 import { infoToOps }          from '/src/engine/dispatcher.js';
 import { getUnifiedMap }      from '/src/board.js';
 import { normalizeInfo }      from '/src/engine/normalize.js';
+import '/src/debug/host-debug-panel.js';
 
 (function hostBootstrap(){
   const WS_ROLE = 'host';
