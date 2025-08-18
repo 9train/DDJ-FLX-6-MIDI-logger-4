@@ -74,19 +74,6 @@ import { createOpsRecorder } from '/src/engine/recorder.js';
   // === Recorder (OPS playback) ==============================================
   const recorder = createOpsRecorder({ applyOps });
 
-  // === Menu wiring (only the requested controls) =============================
-  installViewerMenu({
-    async onRecorderLoad(file) {
-      // Expect a JSON recording: array of { t(ms), ops:[...] } or {frames:[...]}
-      return recorder.loadFromFile(file);
-    },
-    onRecorderPlay() { recorder.play(); },
-    onRecorderStop() { recorder.stop(); },
-
-    onFitToggle(isFill) { wrap.dataset.fit = isFill ? 'cover' : 'contain'; },
-
-    onBGToggle(on) { bg.style.opacity = on ? '1' : '0'; },
-  });
 
   // === WebSocket bootstrap (OG behavior preserved) ===========================
   const WS_ROLE = 'viewer';
