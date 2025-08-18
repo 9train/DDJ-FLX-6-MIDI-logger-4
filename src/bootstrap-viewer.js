@@ -13,7 +13,6 @@
 import { connectWS } from '/src/ws.js';
 import { getWSURL }  from '/src/roles.js';
 import { applyOps }  from '/src/engine/ops.js';
-import { installViewerMenu } from '/src/ui/viewer-menu.js';
 import { createOpsRecorder } from '/src/engine/recorder.js';
 
 (async function main(){
