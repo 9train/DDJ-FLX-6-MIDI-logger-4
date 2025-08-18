@@ -179,6 +179,16 @@ export function applyOps(ops = []) {
         else lightOff(el);
         break;
       }
+// keep your existing exports above (applyOps, etc.)
+
+export function installTestHelpers(){
+  // simple console helpers for manual checks in host or viewer
+  window.light    = (id, on=true, intensity=1) =>
+    applyOps([{ type:'light', target:String(id), on, intensity }]);
+  window.lightOff = (id) =>
+    applyOps([{ type:'light', target:String(id), on:false }]);
+  console.log('[ops] test helpers installed: light(id,on,intensity), lightOff(id)');
+}
 
       // Future extensions (kept from OG pattern):
       // case 'attr':  /* set/remove arbitrary attributes */ break;
