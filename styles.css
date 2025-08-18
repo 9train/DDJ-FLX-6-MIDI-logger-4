@@ -257,3 +257,46 @@ body.viewer #fallbackMenu {
 /* Layout niceties */
 body.viewer #ui .right { gap: 8px; }
 #boardHost { width: 100vw; height: 100vh; }
+
+/* ========================================================================== */
+/* === Ultra-minimal viewer menu (SOP add) ================================== */
+/* Goal: In viewer, hide Diagnostics, Timeline, Wizard, Edit Mode, Rec Start,
+   Rec Save, and Presets from the FAB sheet — leaving only:
+   - Themes (kept)
+   - Background toggle
+   - Fit / Fill
+   - Recorder: Load / Play / Stop
+   - Choose File (for recorder load)
+*/
+
+/* Always hide the specific controls/presets rows in viewer */
+body.viewer #fabSheet .fab-row button[data-act="toggleDiag"],
+body.viewer #fabSheet .fab-row button[data-act="toggleTime"],
+body.viewer #fabSheet .fab-row button[data-act="toggleWizard"],
+body.viewer #fabSheet .fab-row button[data-act="toggleEdit"],
+body.viewer #fabSheet .fab-presets,
+body.viewer #fabSheet [data-act="recStart"],
+body.viewer #fabSheet [data-act="recSave"] {
+  display: none !important;
+}
+
+/* Progressive enhancement: if :has() is supported, also hide the section titles
+   that precede rows containing those removed buttons, and the presets header. */
+@supports selector(:has(*)) {
+  body.viewer #fabSheet .fab-title:has(+ .fab-row button[data-act="toggleDiag"]),
+  body.viewer #fabSheet .fab-title:has(+ .fab-row button[data-act="toggleTime"]),
+  body.viewer #fabSheet .fab-title:has(+ .fab-row button[data-act="toggleWizard"]),
+  body.viewer #fabSheet .fab-title:has(+ .fab-row button[data-act="toggleEdit"]),
+  body.viewer #fabSheet .fab-title:has(+ .fab-presets) {
+    display: none !important;
+  }
+}
+
+/* Notes:
+   - We keep Themes visible by NOT targeting it here.
+   - Fit/Fill and Background toggle remain because their data-act values are not
+     included in these hide rules.
+   - Recorder Load/Play/Stop remain because only recStart & recSave are hidden.
+   - Choose File (input[type=file]) is untouched.
+*/
+/* ========================================================================== */
