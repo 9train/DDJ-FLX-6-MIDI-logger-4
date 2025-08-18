@@ -37,7 +37,7 @@
   </style>
 </head>
 <body class="viewer">
-  <!-- Top toolbar -->
+  <!-- Top toolbar (explicit viewer controls kept) -->
   <div id="ui">
     <div class="left" style="display:flex;gap:8px;align-items:center;">
       <button id="fit" title="Fit SVG inside window">Fit</button>
@@ -112,6 +112,7 @@
     try {
       const { recorder: FLXRec } = await import('/src/recorder.js');
       window.recorder = FLXRec;
+
       $('recStop')  ?.addEventListener('click', () => FLXRec.stop());
       $('recPlay')  ?.addEventListener('click', () => FLXRec.play({ speed: 1.0, loop: false }));
       $('recLoad')  ?.addEventListener('change', async (e) => {
@@ -123,24 +124,48 @@
       console.warn('[viewer] recorder unavailable', e);
     }
 
-    // Toolbar
+    // Toolbar click handlers (explicit buttons)
     const stage = document.getElementById('boardHost');
     $('fit')     ?.addEventListener('click',  () => stage.classList.remove('fill'));
     $('fill')    ?.addEventListener('click',  () => stage.classList.add('fill'));
     $('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
 
-    // Minimal launcher + scrub of any host leftovers
+    // === Launcher (corner menu) — SOP merge of your snippet ==================
+    // Keeps only: Theme toggle, Fit/Fill, Toggle BG, Recorder Load/Play/Stop.
     try {
       const { initLauncher } = await import('/src/launcher.js');
-      const launcher = initLauncher({
+
+      initLauncher({
         actions: {
+          // Keep Themes in viewer (you requested Themes be retained)
           toggleTheme: () => THEME.toggle(),
-          fit:         () => stage.classList.remove('fill'),
-          fill:        () => stage.classList.add('fill'),
-          toggleBG:    () => document.body.classList.toggle('transparent'),
+
+          // View controls
+          fit:      () => stage.classList.remove('fill'),
+          fill:     () => stage.classList.add('fill'),
+          toggleBG: () => document.body.classList.toggle('transparent'),
+
+          // Recorder hooks — no Rec/Save in viewer
+          recLoad: async (file) => {
+            const text = await file.text();
+            await window.recorder?.loadFromText(text);
+          },
+          recPlay: () => window.recorder?.play({ speed: 1.0, loop: false }),
+          recStop: () => window.recorder?.stop(),
         },
-        mountPresetUI: () => {},
+
+        // Hide Panels & Presets; keep only View + Recorder (Play/Stop/Load)
+        ui: {
+          showPanels:  false,
+          showPresets: false,
+          recorder: { showStart: false, showSave: false }
+        },
+
+        // No preset mount in viewer
+        mountPresetUI: () => {}
       });
+
+      // Extra hardening in case any host leftovers render:
       const kill = (sel) => document.querySelectorAll(sel).forEach(el => el.remove());
       kill('#launcher .section-panels, .launcher .section-panels');
       kill('#launcher .section--presets, .launcher .section--presets, #launcher .section-presets, .launcher .section-presets');
@@ -152,7 +177,9 @@
       Array.from(document.querySelectorAll('#launcher h2, .launcher h2')).forEach(h=>{
         if ((h.textContent||'').trim().toLowerCase()==='presets') h.remove();
       });
-    } catch {}
+    } catch (e) {
+      console.warn('[viewer] launcher unavailable', e);
+    }
 
     // Jog Physics (“Tape Mode”) — preserved
     const Jog = (() => {
