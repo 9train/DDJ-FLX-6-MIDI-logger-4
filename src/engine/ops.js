@@ -6,9 +6,9 @@
 //   • Safe no-ops on unknown/absent targets
 //   • Restores cached attributes on lightOff (OG dataset keys supported)
 //   • applyOps: switch-based, easy to extend; ignores unknown op types
-// - Adds (non-breaking, from your snippet):
+// - Adds (non-breaking):
 //   • Hyphen-safe, group-aware lighting: operates on leaf SVG shapes inside <g>
-//   • Attribute + style stashing via data attributes (and backward-compat with OG)
+//   • Attribute + style stashing via data-* (and OG dataset mirrors for compat)
 //   • Stroke glow and drop-shadows scaled by intensity
 //   • Optional color control (CSS var --ops-light-color, or op.color)
 // - Visuals:
@@ -19,7 +19,7 @@
 const SHAPES = 'path,rect,circle,ellipse,polygon,polyline,line';
 
 // ---------- ID Resolution (OG) ----------
-function resolveId(id) {
+export function resolveId(id) {
   if (!id) return null;
   const s = String(id);
   const tries = new Set([s]);
@@ -97,7 +97,8 @@ function resolveColorFrom(opColor) {
   // priority: op.color -> CSS var -> OG cyan
   const fromOp = (opColor && String(opColor)) || '';
   if (fromOp) return fromOp;
-  const cssVar = getComputedStyle(document.documentElement).getPropertyValue('--ops-light-color').trim();
+  const cssVar = getComputedStyle(document.documentElement)
+    .getPropertyValue('--ops-light-color').trim();
   if (cssVar) return cssVar;
   return 'rgb(0,234,255)'; // OG cyan default
 }
@@ -179,16 +180,6 @@ export function applyOps(ops = []) {
         else lightOff(el);
         break;
       }
-// keep your existing exports above (applyOps, etc.)
-
-export function installTestHelpers(){
-  // simple console helpers for manual checks in host or viewer
-  window.light    = (id, on=true, intensity=1) =>
-    applyOps([{ type:'light', target:String(id), on, intensity }]);
-  window.lightOff = (id) =>
-    applyOps([{ type:'light', target:String(id), on:false }]);
-  console.log('[ops] test helpers installed: light(id,on,intensity), lightOff(id)');
-}
 
       // Future extensions (kept from OG pattern):
       // case 'attr':  /* set/remove arbitrary attributes */ break;
@@ -200,4 +191,13 @@ export function installTestHelpers(){
         break;
     }
   }
+}
+
+export function installTestHelpers(){
+  // simple console helpers for manual checks in host or viewer
+  window.light    = (id, on=true, intensity=1) =>
+    applyOps([{ type:'light', target:String(id), on, intensity }]);
+  window.lightOff = (id) =>
+    applyOps([{ type:'light', target:String(id), on:false }]);
+  console.log('[ops] test helpers installed: light(id,on,intensity), lightOff(id)');
 }
