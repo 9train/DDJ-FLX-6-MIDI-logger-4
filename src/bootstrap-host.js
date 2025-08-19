@@ -1,41 +1,56 @@
 // /src/bootstrap-host.js
-// Host bootstrap that:
-//  - connects as 'host' to WS
-//  - converts raw "info" (MIDI) → ops using your existing dispatcher + map
-//  - applies ops locally (so host UI stays live) and broadcasts ops to viewers
-//  - leaves your host UI/features entirely intact
+// Host bootstrap with single-source SVG mounting via mountBoard(), preserving OG pipeline.
+// ──────────────────────────────────────────────────────────────────────────────
+// PRESERVED (from OG):
+//  • Connect as 'host' to WS (URL override respected via roles.js / window.WS_URL)
+//  • Raw "info" (MIDI) → ops using dispatcher + current unified map
+//  • applyOps locally (so host UI stays live) and broadcast ops to viewers
+//  • Exposed integration hooks: wsClient, sendOps, consumeInfo, sendBlink, applyOps
+//  • Optional status surfacing via window.setWSStatus(status)
 //
-// Assumes these modules exist in (15):
-//   /src/engine/ops.js            → applyOps
-//   /src/engine/dispatcher.js     → infoToOps
-//   /src/engine/normalize.js      → normalizeInfo (optional; we call if present)
-//   /src/board.js                 → getUnifiedMap()
-//   /src/ws.js                    → connectWS
-//   /src/roles.js                 → getWSURL
-//
-// Integration hooks preserved/exposed (back-compat with OG + debug panel):
-//   • window.wsClient                          (WS client and socket access)
-//   • window.sendOps(ops)                      (queue-safe ops broadcast)
-//   • window.consumeInfo(raw)                  (raw MIDI/info → ops → apply/send)
-//   • window.sendBlink(target, times, onMs, offMs, intensity) (test helper)
-//   • window.applyOps = applyOps               (optional: for local-only debug actions)
-//   • window.setWSStatus?(status)              (called when WS opens/closes if present)
+// ADDED / CHANGED:
+//  • Mounts board exactly once via mountBoard({ scopeOps:true, zIndex:10 })
+//  • Ensures __OPS_ROOT points at the mounted <svg> for scoped ops
+//  • Defensive singleton boot guard
+// ──────────────────────────────────────────────────────────────────────────────
 
-import { connectWS }    from '/src/ws.js';
-import { getWSURL }     from '/src/roles.js';
-import { applyOps }     from '/src/engine/ops.js';
-import { infoToOps }    from '/src/engine/dispatcher.js';
-import { getUnifiedMap } from '/src/board.js';
+/* eslint-disable no-console */
+
+import { mountBoard }     from '/src/board.js';
+import { connectWS }      from '/src/ws.js';
+import { getWSURL }       from '/src/roles.js';
+import { applyOps }       from '/src/engine/ops.js';
+import { infoToOps }      from '/src/engine/dispatcher.js';
+// Back-compat: board.js should re-export getUnifiedMap from your OG board module,
+// or change this import to '/src/board_og.js' if you split files.
+import { getUnifiedMap }  from '/src/board.js';
 
 let normalizeInfo = null;
-try {
-  // Optional module; if missing we proceed without normalization.
-  ({ normalizeInfo } = await import('/src/engine/normalize.js'));
-} catch {
-  // no-op if not present
-}
+(async () => {
+  try {
+    // Optional normalizer; proceed without it if absent.
+    ({ normalizeInfo } = await import('/src/engine/normalize.js'));
+  } catch {}
+})();
 
-(function hostBootstrap(){
+// === Singleton guard =========================================================
+(() => {
+  if (window.__FLX6_HOST_BOOTED__) {
+    console.warn('[host] bootstrap already ran; skipping');
+    return;
+  }
+  window.__FLX6_HOST_BOOTED__ = true;
+})();
+
+(async function hostBootstrap(){
+  // --- Mount the board first (single source of truth) ------------------------
+  try {
+    await mountBoard({ containerId: 'board', scopeOps: true, zIndex: 10 });
+    // mountBoard sets window.__OPS_ROOT = <svg> when scopeOps:true
+  } catch (e) {
+    console.warn('[HOST] board mount failed:', e);
+  }
+
   // --- Basic wiring ----------------------------------------------------------
   const qs     = new URLSearchParams(location.search);
   const room   = qs.get('room') || 'default';
@@ -44,16 +59,13 @@ try {
   // Monotonic sequence for ops sent by this host.
   let seq = 0;
 
-  // Connect WS as host. We keep onMessage/onOps empty to avoid double-apply
+  // Connect WS as host. Keep onMessage/onOps empty to avoid double-apply
   // (host already applies its own ops locally below).
   const wsClient = connectWS({
     url: wsURL,
     role: 'host',
     room,
-    onStatus: (s) => {
-      // Propagate to optional debug/status UI if present.
-      try { window.setWSStatus && window.setWSStatus(s); } catch {}
-    },
+    onStatus: (s) => { try { window.setWSStatus?.(s); } catch {} },
     onMessage: () => {},
     onOps:     () => {},
   });
@@ -61,7 +73,7 @@ try {
   // Expose for console & other modules that expect this.
   window.wsClient = wsClient;
 
-  // Also expose applyOps for tools (e.g., host-debug-panel "local only").
+  // Also expose applyOps for tools (e.g., host debug panel "local only").
   if (!window.applyOps) window.applyOps = applyOps;
 
   // --- Safe, queue-aware ops sender -----------------------------------------
@@ -69,14 +81,12 @@ try {
     if (!ops || !ops.length) return;
     const msg = { type: 'ops', seq: ++seq, ops };
     try {
-      // Prefer the queueing helper provided by connectWS wrapper:
-      // most implementations give back an object with a .send(obj) that
-      // buffers until OPEN.
       if (typeof wsClient?.send === 'function') {
+        // Preferred: queueing helper from connectWS wrapper
         wsClient.send(msg);
         return;
       }
-      // Fallback: raw socket, if available & open.
+      // Fallback: raw socket if open
       const s = wsClient?.socket;
       if (s && s.readyState === 1) {
         s.send(JSON.stringify(msg));
@@ -138,8 +148,6 @@ try {
     })();
   };
 
-  // Optional: small console breadcrumb for manual verification.
-  try {
-    console.log('[HOST] bootstrap ready → room=%s url=%s', room, wsURL);
-  } catch {}
+  // Optional breadcrumb for verification.
+  try { console.log('[HOST] bootstrap ready → room=%s url=%s', room, wsURL); } catch {}
 })();
