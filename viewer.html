@@ -1,262 +1,258 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Viewer</title>
-    <!-- silence favicon 404 noise -->
-    <link rel="icon" href="data:image/x-icon;base64,AAABAAEAEBAAAAEAIABoBAAAFgAAACgAAAAQAAAAIAAAAAEAGAAAAAAAAAMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" />
-    <style>
-      :root { color-scheme: light dark; }
-      *{ box-sizing: border-box; }
-      body{ margin:0; font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-      .toolbar{ position:sticky; top:0; z-index:10; display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; padding:.5rem .75rem; border-bottom:1px solid #2a2a2a; background:#1a1a1a; color:#eee; }
-      .toolbar button, .toolbar label, .toolbar select{ padding:.35rem .6rem; border:1px solid #3a3a3a; border-radius:.5rem; background:#2a2a2a; color:#eee; cursor:pointer; user-select:none; }
-      .toolbar .muted{ opacity:.7; }
-      .spacer{ flex:1 1 auto; }
-      .status{ display:flex; gap:1rem; opacity:.9; }
-      #boardHost{ width:100vw; height:calc(100dvh - 48px); display:grid; place-items:center; background:#111; color:#fff; }
-      #boardHost.fill svg, #boardHost.fill canvas, #boardHost.fill img{ width:100%; height:100%; object-fit:contain; }
-      body.transparent{ background:transparent; }
-      .demo-note{ position:absolute; top:56px; right:12px; background:#0008; color:#fff; padding:.25rem .5rem; border-radius:.4rem; font-size:12px; }
-      [id^="jog_"]{ transition: transform .05s linear; }
-    </style>
-  </head>
-  <body>
-    <div class="toolbar">
-      <button id="fit">Fit</button>
-      <button id="fill">Fill</button>
-      <button id="toggleBG">Toggle BG</button>
-      <div class="spacer"></div>
-      <div class="status">
-        <span id="wsStatus">WS: ⏳</span>
-        <span class="muted">MIDI: viewer</span>
-      </div>
-      <button id="recStop">Stop</button>
-      <button id="recPlay">Play</button>
-      <label><input id="recLoad" type="file" accept=".json,.txt" /></label>
-      <!-- debug helpers (optional) -->
-      <button id="mountDemo">Load Demo</button>
-      <button id="spinL">Spin L</button>
-      <button id="spinR">Spin R</button>
-      <select id="modeSel">
-        <option value="off">mode: off</option>
-        <option value="absolute">mode: absolute</option>
-        <option value="tape" selected>mode: tape</option>
-      </select>
-    </div>
+<head>
+  <meta charset="utf-8" />
+  <title>FLX6 Visualizer — Viewer</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="/styles.css" />
 
-    <div id="boardHost" class="fill"></div>
-    <div id="demoNote" class="demo-note" style="display:none">Demo SVG mounted</div>
+  <!-- Hard-disable any corner popups if a stray import creeps back in -->
+  <style>
+    /* Nuke launcher & any legacy mini-menus */
+    #fab, #fabSheet, .viewer-menu { display: none !important; }
 
-    <!-- IMPORTANT: restore the launcher mount; many pipelines require it -->
-    <div id="launcher" class="launcher" style="position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden"></div>
+    /* Minimal status bar */
+    #statusBar {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      z-index: 1000;
+      display: inline-flex;
+      gap: 10px;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 10px;
+      background: rgba(16, 22, 43, 0.92);
+      border: 1px solid var(--panel-border, #33406b);
+      color: var(--ink, #cfe0ff);
+      font: 13px/1.25 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    }
+    #statusBar button {
+      background: #0b1020;
+      border: 1px solid #33406b;
+      color: inherit;
+      border-radius: 10px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
 
-    <script type="module">
-      // ===== boot =====
-      const qs = new URLSearchParams(location.search);
-      const role = qs.get('role') || 'viewer';
-      const room = qs.get('room') || '-';
-      const $ = (id) => document.getElementById(id);
-      const stage = $('boardHost');
+    /* Stage sizing */
+    #boardHost { width: 100vw; height: 100vh; }
 
-      // WS status helper
-      const wsStatusEl = $("wsStatus");
-      window.setWSStatus = (s) => { if (wsStatusEl) wsStatusEl.textContent = "WS: " + s; };
+    /* Optional: when .fill is on the stage, your stylesheet can make SVG cover */
+    /* If your styles.css doesn’t include it, you can add rules like:
+       #boardHost.fill svg { preserveAspectRatio: xMidYMid slice; }
+       #boardHost:not(.fill) svg { preserveAspectRatio: xMidYMid meet; }
+    */
+  </style>
 
-      // Recorder controls
-      try {
-        const { recorder: FLXRec } = await import('./src/recorder.js');
-        window.recorder = FLXRec;
-        $("recStop")?.addEventListener('click', () => FLXRec.stop());
-        $("recPlay")?.addEventListener('click', () => FLXRec.play({ speed: 1.0, loop: false }));
-        $("recLoad")?.addEventListener('change', async (e) => {
-          const file = e.target.files?.[0]; if (!file) return;
-          const text = await file.text(); await FLXRec.loadFromText(text);
-        });
-      } catch (e) {
-        console.warn('[viewer] recorder unavailable', e);
-      }
+  <!-- Force your actual WS relay (override any guessing) -->
+  <script>
+    window.WS_URL = "wss://ws.setsoutofcontext.com";
+    // window.WS_FORCE = true; // uncomment to forbid auto-guessing
+  </script>
+</head>
+<body class="viewer">
+  <!-- Board stage -->
+  <div id="boardHost"></div>
 
-      // Toolbar
-      $("fit") ?.addEventListener('click', () => stage?.classList.remove('fill'));
-      $("fill") ?.addEventListener('click', () => stage?.classList.add('fill'));
-      $("toggleBG")?.addEventListener('click', () => document.body.classList.toggle('transparent'));
+  <!-- Minimal status bar (now with Fit/Fill/BG per your snippets) -->
+  <div id="statusBar" role="status">
+    <span id="wsStatus">WS: ⏳</span>
+    <span id="midiStatus">MIDI: ⏳</span>
+    <button id="fit" type="button" title="Fit SVG inside window">Fit</button>
+    <button id="fill" type="button" title="Fill the frame">Fill</button>
+    <button id="toggleBG" type="button" title="Toggle transparent background">Toggle BG</button>
+    <button id="themeToggle" type="button" title="Toggle theme">Theme</button>
+  </div>
 
-      // Launcher (restore + scrub only the heavy UI)
-      let launcherApi = null;
-      try {
-        const { initLauncher } = await import('./src/launcher.js');
-        launcherApi = initLauncher?.({
-          actions: {
-            toggleTheme: () => (window.THEME?.toggle?.()),
-            fit:  () => stage?.classList.remove('fill'),
-            fill: () => stage?.classList.add('fill'),
-            toggleBG: () => document.body.classList.toggle('transparent'),
-          },
-          mountPresetUI: () => {},
-          stageEl: stage,
-          role: 'viewer',
-          room,
-        });
-        const kill = (sel) => document.querySelectorAll(sel).forEach(el => el.remove());
-        kill('#launcher .section-panels, .launcher .section-panels');
-        kill('#launcher .section--presets, .launcher .section--presets, #launcher .section-presets, .launcher .section-presets');
-        kill('[data-action="toggleDiag"], [data-action="toggleTimeline"], [data-action="toggleWizard"], [data-action="toggleEdit"]');
-        Array.from(document.querySelectorAll('#launcher button, .launcher button')).forEach(btn=>{
-          const t = (btn.textContent || '').trim().toLowerCase();
-          if (t === 'rec' || t === 'save') btn.remove();
-        });
-        Array.from(document.querySelectorAll('#launcher h2, .launcher h2')).forEach(h=>{
-          if ((h.textContent||'').trim().toLowerCase()==='presets') h.remove();
-        });
-      } catch(e) {
-        console.warn('[viewer] launcher unavailable', e);
-      }
+  <!-- === Minimal inline module: init board, theme, statuses, designer, view controls === -->
+  <script type="module">
+    import { initBoard } from '/src/board.js';
+    import * as THEME   from '/src/theme.js';
 
-      // ---- Jog Physics (Tape Mode) ----
-      const Jog = (() => {
-        const CFG = { mode:'off', sensitivity:2.5, damping:0.92 };
-        const S = {
-          L:{ angle:0, vel:0, lastVal:null, lastKey:null, el:null },
-          R:{ angle:0, vel:0, lastVal:null, lastKey:null, el:null },
-          anim:null
-        };
-        const toIdVariants = (id) => {
-          const v=String(id||''); const a=new Set([v]);
-          if (v.includes('_x5F_')) a.add(v.replace(/_x5F_/g,'_'));
-          if (v.includes('_')) a.add(v.replace(/_/g,'_x5F_'));
-          return [...a];
-        };
-        const getEl = (id) => { for (const vid of toIdVariants(id)) { const el = document.getElementById(vid); if (el) return el; } return null; };
-        function resolveJogEls(){ S.L.el=getEl('jog_L'); S.R.el=getEl('jog_R'); }
-        resolveJogEls();
-        function applyRotation(el, ang){
-          if (!el) return;
-          try { el.style.transformBox = 'fill-box'; el.style.transformOrigin = 'center'; el.style.transform = `rotate(${ang}deg)`; } catch {}
-          try { const bb=el.getBBox?.(); if (bb){ const cx=bb.x+bb.width/2, cy=bb.y+bb.height/2; el.setAttribute?.('transform', `rotate(${ang} ${cx} ${cy})`); } } catch {}
-        }
-        function tick(){
-          S.anim = requestAnimationFrame(tick);
-          if (CFG.mode !== 'tape') return;
-          ['L','R'].forEach(side=>{
-            const j=S[side]; if (!j.el) return;
-            j.angle += j.vel; j.vel *= CFG.damping;
-            if (Math.abs(j.vel) < 0.001) j.vel = 0;
-            applyRotation(j.el, j.angle);
-          });
-        }
-        if (!window.__JOG_WRAP__) {
-          window.__JOG_WRAP__ = true;
-          const orig = window.consumeInfo;
-          window.consumeInfo = (info) => {
-            try { onEvent(info); } catch {}
-            if (typeof orig === 'function') return orig(info);
-          };
-        }
-        function onEvent(info){
-          if (CFG.mode === 'off') return;
-          const mm = window.getUnifiedMap?.() || [];
-          const type = (info.type||'').toLowerCase();
-          const code = type === 'cc' ? (info.controller ?? info.d1) : info.d1;
-          const key = `${type}:${info.ch}:${code}`;
-          const hits = mm.filter(m =>
-            (m.key && m.key === key && m.target) ||
-            (!m.key && m.type === type && m.ch === info.ch && m.code === (info.controller ?? info.d1) && m.target)
-          );
-          let side = null;
-          if (hits.some(h => (h.target||'').toLowerCase().includes('jog_l'))) side = 'L';
-          if (hits.some(h => (h.target||'').toLowerCase().includes('jog_r'))) side = side || 'R';
-          if (!side) return;
-          const j = S[side]; if (!j.el) resolveJogEls();
-          if (CFG.mode === 'absolute') {
-            const angle = (info.value ?? info.d2 ?? 0) * (360/127);
-            j.angle = angle; applyRotation(j.el, j.angle); return;
-          }
-          if (CFG.mode === 'tape') {
-            const v = (info.value ?? info.d2 ?? 0) | 0;
-            if (j.lastKey !== key) j.lastVal = null;
-            let d; if (j.lastVal == null) d = 0; else {
-              d = v - j.lastVal; if (d > 64) d -= 128; if (d < -64) d += 128;
-            }
-            j.lastVal = v; j.lastKey = key; j.vel += d * 2.5; if (!S.anim) tick();
-          }
-        }
-        return { CFG, S, applyRotation, resolveJogEls };
-      })();
-      window.Jog = Jog;
+    // Role flags (kept for any downstream checks)
+    const ROLE = 'viewer';
+    document.body.classList.add(ROLE);
+    document.body.dataset.role = ROLE;
+    window.FLX_ROLE = ROLE;
 
-      // Hotkey
-      document.addEventListener('keydown', (e)=>{ if (e.shiftKey && e.key.toLowerCase()==='t') window.THEME?.toggle?.(); });
+    // Initialize SVG board
+    await initBoard({ hostId: 'boardHost' });
 
-      // -------- Debug helpers (optional) --------
-      function mountDemo(){
-        if (!stage) return;
-        stage.innerHTML = `
-          <svg id="demoSVG" viewBox="0 0 1200 400" width="100%" height="100%">
-            <defs><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="4" stdDeviation="8" flood-opacity="0.35"/></filter></defs>
-            <g filter="url(#shadow)"><rect x="0" y="0" width="1200" height="400" rx="24" fill="#222" stroke="#444"/></g>
-            <g id="jog_L" transform="translate(300 200)"><circle r="140" fill="#333" stroke="#666" stroke-width="8" /><circle r="8" fill="#999" /></g>
-            <g id="jog_R" transform="translate(900 200)"><circle r="140" fill="#333" stroke="#666" stroke-width="8" /><circle r="8" fill="#999" /></g>
-            <text x="600" y="360" fill="#bbb" font-size="22" text-anchor="middle">Demo platters — ids: jog_L / jog_R</text>
-          </svg>`;
-        $("demoNote").style.display = 'block';
-        window.Jog?.resolveJogEls?.();
-      }
-      $("mountDemo")?.addEventListener('click', ()=> mountDemo());
-      $("spinL")?.addEventListener('click', ()=>{
-        Jog.CFG.mode = $("modeSel").value; const j = Jog.S.L; if (!j.el) Jog.resolveJogEls();
-        if (Jog.CFG.mode === 'absolute') { j.angle = (j.angle + 12) % 360; Jog.applyRotation(j.el, j.angle); }
-        else if (Jog.CFG.mode === 'tape') { j.vel += 2.5; if (!Jog.S.anim) (function tickWrap(){
-          Jog.S.anim = requestAnimationFrame(tickWrap);
-          const { S, CFG, applyRotation } = Jog;
-          ['L','R'].forEach(side=>{ const jj=S[side]; if (!jj.el) return; jj.angle += jj.vel; jj.vel *= CFG.damping; if (Math.abs(jj.vel)<0.001) jj.vel=0; applyRotation(jj.el,jj.angle); });
-        })(); }
+    // Attach Theme Designer (your snippet)
+    try {
+      THEME.attachThemeDesigner?.({ svgRoot: document.querySelector('#boardHost svg') });
+    } catch {}
+
+    // Theme toggle
+    document.getElementById('themeToggle')
+      ?.addEventListener('click', () => THEME.toggle?.());
+
+    // WS status hook for /src/bootstrap-viewer.js
+    const wsStatusEl = document.getElementById('wsStatus');
+    window.setWSStatus = (s) => { if (wsStatusEl) wsStatusEl.textContent = 'WS: ' + s; };
+
+    // MIDI status (optional; will show "n/a" if no module)
+    const midiStatusEl = document.getElementById('midiStatus');
+    try {
+      const midi = await import('/src/midi.js');
+      midi.initMIDI?.({
+        onStatus: (s) => { midiStatusEl.textContent = 'MIDI: ' + s; }
       });
-      $("spinR")?.addEventListener('click', ()=>{
-        Jog.CFG.mode = $("modeSel").value; const j = Jog.S.R; if (!j.el) Jog.resolveJogEls();
-        if (Jog.CFG.mode === 'absolute') { j.angle = (j.angle + 12) % 360; Jog.applyRotation(j.el, j.angle); }
-        else if (Jog.CFG.mode === 'tape') { j.vel += 2.5; if (!Jog.S.anim) (function tickWrap(){
-          Jog.S.anim = requestAnimationFrame(tickWrap);
-          const { S, CFG, applyRotation } = Jog;
-          ['L','R'].forEach(side=>{ const jj=S[side]; if (!jj.el) return; jj.angle += jj.vel; jj.vel *= CFG.damping; if (Math.abs(jj.vel)<0.001) jj.vel=0; applyRotation(jj.el,jj.angle); });
-        })(); }
-      });
+    } catch {
+      midiStatusEl.textContent = 'MIDI: n/a';
+    }
 
-      // -------- Board autoload (fallback if launcher doesn’t mount) --------
-      async function tryImport(path){ try { return await import(path); } catch { return null; } }
-      async function injectSVG(url){
+    // Fit / Fill / Toggle BG buttons (your snippet)
+    const stage = document.getElementById('boardHost');
+    const fitBtn = document.getElementById('fit');
+    const fillBtn = document.getElementById('fill');
+    const bgBtn  = document.getElementById('toggleBG');
+
+    if (fitBtn)  fitBtn.onclick  = () => stage.classList.remove('fill');
+    if (fillBtn) fillBtn.onclick = () => stage.classList.add('fill');
+    if (bgBtn)   bgBtn.onclick   = () => document.body.classList.toggle('transparent');
+
+    // Jog Physics (“Tape Mode”) — full block preserved from OG
+    const Jog = (() => {
+      const CFG = { mode:'off', sensitivity:2.5, damping:0.92 };
+      const S   = {
+        L:{ angle:0, vel:0, lastVal:null, lastKey:null, el:null },
+        R:{ angle:0, vel:0, lastVal:null, lastKey:null, el:null },
+        anim:null
+      };
+
+      function toIdVariants(id){
+        const v=String(id||''); const a=new Set([v]);
+        if (v.includes('_x5F_')) a.add(v.replace(/_x5F_/g,'_'));
+        if (v.includes('_'))     a.add(v.replace(/_/g,'_x5F_'));
+        return [...a];
+      }
+      function getEl(id){
+        for (const vid of toIdVariants(id)) {
+          const el = document.getElementById(vid);
+          if (el) return el;
+        }
+        return null;
+      }
+      function resolveJogEls(){ S.L.el=getEl('jog_L'); S.R.el=getEl('jog_R'); }
+      resolveJogEls();
+
+      function applyRotation(el, ang){
+        if (!el) return;
         try {
-          const r = await fetch(url); if (!r.ok) return false;
-          const txt = await r.text(); if (!/<svg[\\s\\S]*>/.test(txt)) return false;
-          stage.innerHTML = txt; window.Jog?.resolveJogEls?.(); console.log('[viewer] injected SVG from', url); return true;
-        } catch { return false; }
+          el.style.transformBox = 'fill-box';
+          el.style.transformOrigin = 'center';
+          el.style.transform = `rotate(${ang}deg)`;
+        } catch {}
+        try {
+          const bb=el.getBBox(); const cx=bb.x+bb.width/2, cy=bb.y+bb.height/2;
+          el.setAttribute('transform', `rotate(${ang} ${cx} ${cy})`);
+        } catch {}
       }
-      async function autoloadBoard(){
-        if (launcherApi?.mountBoardInto && stage) {
-          try { await launcherApi.mountBoardInto(stage); return true; }
-          catch (e) { console.warn('[viewer] launcher mountBoardInto failed', e); }
+
+      function tick(){
+        S.anim = requestAnimationFrame(tick);
+        if (CFG.mode !== 'tape') return;
+        ['L','R'].forEach(side=>{
+          const j=S[side]; if (!j.el) return;
+          j.angle += j.vel;
+          j.vel   *= CFG.damping;
+          if (Math.abs(j.vel) < 0.001) j.vel = 0;
+          applyRotation(j.el, j.angle);
+        });
+      }
+
+      // Wrap consumeInfo once
+      if (!window.__JOG_WRAP__) {
+        window.__JOG_WRAP__ = true;
+        const orig = window.consumeInfo || ((x)=>x);
+        window.consumeInfo = (info) => { try { onEvent(info); } catch {} return orig(info); };
+      }
+
+      function onEvent(info){
+        if (!info || CFG.mode === 'off') return;
+        const mm = (window.getUnifiedMap?.() || []);
+        const type = (info.type||'').toLowerCase();
+        const code = type === 'cc' ? (info.controller ?? info.d1) : info.d1;
+        const key  = `${type}:${info.ch}:${code}`;
+        const hits = mm.filter(m =>
+          (m.key && m.key === key && m.target) ||
+          (!m.key && m.type === type && m.ch === info.ch && m.code === (info.controller ?? info.d1) && m.target)
+        );
+
+        let side = null;
+        if (hits.some(h => (h.target||'').toLowerCase().includes('jog_l'))) side = 'L';
+        if (hits.some(h => (h.target||'').toLowerCase().includes('jog_r'))) side = side || 'R';
+        if (!side) return;
+
+        const j = S[side];
+        if (!j.el) resolveJogEls();
+
+        if (CFG.mode === 'absolute') {
+          const angle = (info.value ?? info.d2 ?? 0) * (360/127);
+          j.angle = angle; applyRotation(j.el, j.angle); return;
         }
-        const candidates = ['./src/board.js','./board.js','./boards/board.js','./src/boards/board.js','./src/ui/board.js'];
-        for (const p of candidates){
-          const m = await tryImport(p); if (!m) continue;
-          console.log('[viewer] board module loaded from', p);
-          const fn = m.mountBoard || m.initBoard || m.default || m.createBoard || m.mount;
-          try {
-            if (typeof fn === 'function') {
-              const res = fn.length ? fn(stage) : fn(); await Promise.resolve(res); return true;
-            }
-          } catch (e) { console.warn('[viewer] board module mount failed', p, e); }
-          const path = m.BOARD_SVG_PATH || m.SVG || m.path || m.boardPath;
-          if (typeof path === 'string' && await injectSVG(path)) return true;
+        if (CFG.mode === 'tape') {
+          const v = (info.value ?? info.d2 ?? 0) | 0;
+          if (j.lastKey !== key) j.lastVal = null;
+          let d;
+          if (j.lastVal == null) d = 0;
+          else {
+            d = v - j.lastVal;
+            if (d > 64) d -= 128;
+            if (d < -64) d += 128;
+          }
+          j.lastVal = v; j.lastKey = key;
+          j.vel += d * 2.5;
+          if (!S.anim) tick();
         }
-        const svgPaths = ['./src/board.svg','./board.svg','./assets/board.svg','./public/board.svg'];
-        for (const sp of svgPaths){ if (await injectSVG(sp)) return true; }
+      }
+
+      // Expose a tiny runtime control if you want it in console:
+      window.__JOG__ = {
+        setMode: (m) => { CFG.mode = (m==='off'||m==='absolute'||m==='tape') ? m : 'off'; if (m!=='tape' && S.anim){ cancelAnimationFrame(S.anim); S.anim=null; } },
+        get mode(){ return CFG.mode; }
+      };
+      return {};
+    })();
+  </script>
+
+  <!-- WS bootstrap keeps ops/state handling (unchanged core behavior) -->
+  <script type="module" src="/src/bootstrap-viewer.js"></script>
+
+  <!-- Late-join fallback map loader (unchanged) -->
+  <script>
+    (function fallbackMapBootstrap(){
+      const START = Date.now();
+      const TRY_AFTER_MS = 1200;
+      function hasMap() {
+        try {
+          if (Array.isArray(window.__currentMap) && window.__currentMap.length) return true;
+          const cached = localStorage.getItem('learned_map');
+          if (cached) {
+            const m = JSON.parse(cached);
+            if (Array.isArray(m) && m.length) { window.__currentMap = m; return true; }
+          }
+        } catch {}
         return false;
       }
-      autoloadBoard();
-
-      window.setWSStatus('—');
-    </script>
-  </body>
+      setTimeout(async () => {
+        if (hasMap()) return; // map already applied by WS replay
+        try {
+          const r = await fetch('/learned_map.json', { cache: 'no-store' });
+          if (!r.ok) return;
+          const map = await r.json();
+          if (Array.isArray(map) && map.length) {
+            window.__currentMap = map;
+            try { localStorage.setItem('learned_map', JSON.stringify(map)); } catch {}
+            window.dispatchEvent(new CustomEvent('flx:remote-map', { detail: map }));
+            console.log('[fallback-map] applied', map.length, 'entries after', Date.now()-START, 'ms');
+          }
+        } catch {}
+      }, TRY_AFTER_MS);
+    })();
+  </script>
+</body>
 </html>
