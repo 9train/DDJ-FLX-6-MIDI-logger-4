@@ -20,25 +20,10 @@ const knobAccumAngle = Object.create(null);
 const jogAngle       = Object.create(null); // per-target accumulated angle for jogs
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NEW: Singleton guards for mountBoard
+// Singleton guards for mountBoard
 let __mounting = null;
 let __mounted  = null;
 // ─────────────────────────────────────────────────────────────────────────────
-
-/* -------------------------
-   URL helper
---------------------------*/
-function _appendCacheBust(url, enable = true) {
-  if (!enable) return url;
-  try {
-    const u = new URL(url, window.location.href);
-    u.searchParams.set('_', Date.now().toString());
-    return u.toString();
-  } catch {
-    const sep = url.includes('?') ? '&' : '?';
-    return url + sep + '_=' + Date.now();
-  }
-}
 
 /* -------------------------
    ID utilities
@@ -63,7 +48,6 @@ function getElByAnyId(id){ return getElByAnyIdIn(svgRoot, id); }
 /* -------------------------
    Jog helpers
 --------------------------*/
-// Export so other modules can import it if needed.
 export function decodeRelative7(v){
   // Typical relative 7-bit: 1..63 = +steps, 65..127 = -steps, 0/64 = no move
   if (v === 0 || v === 64) return 0;
@@ -176,7 +160,7 @@ export async function initBoard({ hostId, svgUrl = DEFAULT_SVG_URL, mapUrl = DEF
   const host = document.getElementById(hostId);
   if (!host) throw new Error(`Board host #${hostId} not found`);
 
-  // Load SVG fresh (legacy behavior)
+  // Load SVG fresh (legacy behavior) — plain URL
   const svgTxt = await (await fetch(svgUrl, { cache: 'no-store' })).text();
   host.innerHTML = svgTxt;
   svgRoot = host.querySelector('svg');
@@ -186,15 +170,14 @@ export async function initBoard({ hostId, svgUrl = DEFAULT_SVG_URL, mapUrl = DEF
 }
 
 /* -------------------------
-   mountBoard (NEW, single source of truth)
-   - Strictly one fetch (plain or cache-busted)
+   mountBoard (single source of truth)
+   - Strictly one fetch (PLAIN URL ONLY)
    - Singleton: refuses to run twice
    - Cleans legacy embeds inside the mount
 --------------------------*/
 export async function mountBoard({
   containerId = 'board',
-  url         = DEFAULT_SVG_URL,
-  cacheBust   = true,
+  url         = DEFAULT_SVG_URL, // PLAIN ONLY
   scopeOps    = true,
   zIndex      = 10,
   mapUrl      = DEFAULT_MAP_URL,
@@ -212,8 +195,8 @@ export async function mountBoard({
     // Remove stray inline <svg> children previously injected by other code
     [...mount.children].forEach(el => { if (el.tagName === 'SVG') el.remove(); });
 
-    // 3) Choose single URL and fetch ONCE (plain vs cachebusted)
-    const fetchURL = _appendCacheBust(url, cacheBust);
+    // 3) Fetch ONCE using the plain URL
+    const fetchURL = url; // plain
     const r = await fetch(fetchURL, { cache: 'no-store' });
     if (!r.ok) throw new Error(`[board] fetch failed ${r.status} ${r.statusText}`);
     const svgText = await r.text();
@@ -457,7 +440,6 @@ function animateContinuous(el, entry, value){
   lastCCValue[entry.target] = value;
   const id = (entry.target || '').toLowerCase();
 
-  // Case-insensitive selectors for robustness
   const isVertSlider = /^slider_ch[1-4]$/i.test(id) || /^slider_tempo_(l|r)$/i.test(id);
   const isXfader     = /^(xfader(_slider)?|crossfader)$/i.test(id);
 
@@ -469,7 +451,6 @@ function animateContinuous(el, entry, value){
     const minY = parseFloat(el.getAttribute('data-minY') || el.getAttribute('y') || '0'); // top
     const maxY = parseFloat(el.getAttribute('data-maxY') || (minY + 140));                // bottom
     const t    = Math.max(0, Math.min(1, value/127));
-    // Invert mapping so 0 → bottom (maxY), 127 → top (minY)
     const y    = maxY - (maxY - minY) * t;
     el.setAttribute('y', y.toFixed(1));
     return;
@@ -524,8 +505,8 @@ function animateContinuous(el, entry, value){
     const { angleMin, angleMax, angleOffset, mode } = getKnobRotateConfig(target);
     const span = angleMax - angleMin;
     const v = Math.max(0, Math.min(127, value));
-
     let angle;
+
     if (mode === 'accum') {
       const prev = (lastCCValue[entry.target + ':knob'] ?? v);
       const step = v - prev;
