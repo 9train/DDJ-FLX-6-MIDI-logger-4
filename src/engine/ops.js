@@ -84,7 +84,8 @@ function restoreStyle(el, prop) {
 // ---------- Lighting helpers (Group-aware, hyphen-safe) ----------
 function getTargets(el) {
   if (!el) return [];
-  const shapes = Array.from(el.querySelectorAll(SHAPES));
+  // If it's a <g>, operate on leaf shapes inside; otherwise operate on the element itself.
+  const shapes = Array.from(el.querySelectorAll?.(SHAPES) || []);
   return shapes.length ? shapes : [el];
 }
 
