@@ -1,7 +1,7 @@
-// src/board.js
-// Loads assets/board.svg into #boardHost, merges flx6_map.json with local mappings,
-// auto-calibrates bounds for CH1–CH4 faders, tempos, crossfader,
-// adds jog wheel support, safe CSS-only rotation for knobs/jogs,
+// /src/board.js
+// Loads assets/board.svg into #board, merges flx6_map.json with local mappings,
+// auto‑calibrates bounds for CH1–CH4 faders, tempos, crossfader,
+// adds jog wheel support, safe CSS‑only rotation for knobs/jogs,
 // and (optionally) applies semantic/umbrella classes via groups.js for theming.
 // Console helpers under window.FLXTest.
 
@@ -18,6 +18,88 @@ let fileMapCache = []; // keep the shipped map so we can re-merge when learned m
 const lastCCValue    = Object.create(null);
 const knobAccumAngle = Object.create(null);
 const jogAngle       = Object.create(null); // per-target accumulated angle for jogs
+
+/* -------------------------
+   mountBoard (NEW)
+   Single source of truth for loading the board SVG into a container.
+   Uses existing initBoard so mappings/groups/calibration remain intact.
+--------------------------*/
+function _appendCacheBust(url, enable = true) {
+  if (!enable) return url;
+  try {
+    const u = new URL(url, window.location.href);
+    u.searchParams.set('_', Date.now().toString());
+    return u.toString();
+  } catch {
+    const sep = url.includes('?') ? '&' : '?';
+    return url + sep + '_=' + Date.now();
+  }
+}
+
+/**
+ * @param {Object} opts
+ * @param {string}  [opts.containerId='board']      // default aligned to existing bootstraps
+ * @param {string}  [opts.url=DEFAULT_SVG_URL]
+ * @param {boolean} [opts.cacheBust=true]
+ * @param {boolean} [opts.scopeOps=false]           // set window.__OPS_ROOT to the mounted <svg>
+ * @param {number}  [opts.zIndex=10]
+ * @returns {Promise<{mount:HTMLElement, svg:SVGSVGElement, url:string,
+ *                    query:(sel:string)=>Element|null,
+ *                    queryAll:(sel:string)=>NodeListOf<Element>,
+ *                    byId:(id:string)=>Element|null,
+ *                    bbox:()=>DOMRect, size:()=>{width:number,height:number}}>}
+ */
+export async function mountBoard({
+  containerId = 'board',
+  url         = DEFAULT_SVG_URL,
+  cacheBust   = true,
+  scopeOps    = false,
+  zIndex      = 10,
+} = {}) {
+  // Ensure the mount exists (don’t silently pick another id)
+  let mount = document.getElementById(containerId);
+  if (!mount) {
+    // create it to be resilient during migration (harmless if it already exists)
+    mount = document.createElement('div');
+    mount.id = containerId;
+    mount.style.position = 'relative';
+    mount.style.width = '100%';
+    mount.style.height = '100%';
+    (document.getElementById('app') || document.body).appendChild(mount);
+  }
+
+  // Stacking context if requested
+  try {
+    if (zIndex != null) {
+      if (!mount.style.position) mount.style.position = 'relative';
+      mount.style.zIndex = String(zIndex);
+    }
+  } catch {}
+
+  // Reuse your existing initializer to keep all behavior unchanged
+  const svgUrl = _appendCacheBust(url, cacheBust);
+  await initBoard({ hostId: containerId, svgUrl, mapUrl: DEFAULT_MAP_URL });
+
+  const svg = mount.querySelector('svg');
+  if (!svg) throw new Error('[board] mountBoard: SVG failed to load');
+
+  if (scopeOps && typeof window !== 'undefined') {
+    window.__OPS_ROOT = svg;
+  }
+
+  const query    = (sel) => svg.querySelector(sel);
+  const queryAll = (sel) => svg.querySelectorAll(sel);
+  const byId     = (id)  => getElByAnyIdIn(svg, id);
+  const bbox     = () => svg.getBBox();
+  const size     = () => {
+    const vb = svg.viewBox?.baseVal;
+    const width  = (vb && vb.width)  || svg.width?.baseVal?.value  || mount.clientWidth  || 0;
+    const height = (vb && vb.height) || svg.height?.baseVal?.value || mount.clientHeight || 0;
+    return { width, height };
+  };
+
+  return { mount, svg, url: svgUrl, query, queryAll, byId, bbox, size };
+}
 
 /* -------------------------
    ID utilities
@@ -115,6 +197,7 @@ export async function initBoard({ hostId, svgUrl = DEFAULT_SVG_URL, mapUrl = DEF
   const svgTxt = await (await fetch(svgUrl, { cache: 'no-store' })).text();
   host.innerHTML = svgTxt;
   svgRoot = host.querySelector('svg');
+  if (!svgRoot) throw new Error('[board] initBoard: SVG failed to load');
 
   // OPTIONAL: apply semantic/umbrella classes for theming (src/groups.js)
   try {
@@ -487,10 +570,10 @@ function listSliderBounds(){
 // Expose helpers for console
 if (typeof window !== 'undefined') {
   window.FLXTest = window.FLXTest || {};
-  window.FLXTest.flashByTarget   = flashByTarget;
-  window.FLXTest.smokeFlashAll   = smokeFlashAll;
-  window.FLXTest.listIds         = allTargetIdsInSVG;
-  window.FLXTest.listSliderBounds= listSliderBounds;
+  window.FLXTest.flashByTarget    = flashByTarget;
+  window.FLXTest.smokeFlashAll    = smokeFlashAll;
+  window.FLXTest.listIds          = allTargetIdsInSVG;
+  window.FLXTest.listSliderBounds = listSliderBounds;
 }
 
 /* -------------------------
@@ -526,24 +609,3 @@ export function remergeLearned() {
   console.log('[Board] Remerged (manual):', unifiedMap.length);
   return getUnifiedMap();
 }
-
-/* -------------------------
-   Option A: Named export mountBoard (wrapper)
-   - Preferred import:   import { mountBoard } from '/src/board.js';
-   - Back-compat:        default export remains the function.
---------------------------*/
-export function mountBoard({
-  containerId = 'board',
-  url        = DEFAULT_SVG_URL,
-  mapUrl     = DEFAULT_MAP_URL,
-} = {}) {
-  // Delegate to existing init logic; zero behavior change.
-  return initBoard({ hostId: containerId, svgUrl: url, mapUrl });
-}
-
-// Named exports per SOP
-export { mountBoard as MountBoard }; // (alias optional; safe to remove)
-export { getUnifiedMap };
-
-// Optional legacy default export: keep default for older imports
-export default mountBoard;
