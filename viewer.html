@@ -6,9 +6,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="stylesheet" href="/styles.css" />
 
-  <!-- Hard-disable any corner popups if a stray import creeps back in -->
+  <!-- Hard-disable any legacy viewer chrome if stray imports reappear -->
   <style>
-    /* Nuke launcher & any legacy mini-menus */
+    /* Hide any old floating menus / launchers if they sneak back in */
     #fab, #fabSheet, .viewer-menu { display: none !important; }
 
     /* Minimal status bar */
@@ -36,13 +36,15 @@
       cursor: pointer;
     }
 
-    /* Stage sizing */
-    #boardHost { width: 100vw; height: 100vh; }
+    /* Stage sizing — updated to use #board (single container) */
+    /* Full-viewport usage per your snippet */
+    html, body { height: 100%; margin: 0; }
+    #board { width: 100%; height: 100%; }
 
     /* Optional: when .fill is on the stage, your stylesheet can make SVG cover */
     /* If your styles.css doesn’t include it, you can add rules like:
-       #boardHost.fill svg { preserveAspectRatio: xMidYMid slice; }
-       #boardHost:not(.fill) svg { preserveAspectRatio: xMidYMid meet; }
+       #board.fill svg     { preserveAspectRatio: xMidYMid slice; }
+       #board:not(.fill) svg { preserveAspectRatio: xMidYMid meet; }
     */
   </style>
 
@@ -53,10 +55,10 @@
   </script>
 </head>
 <body class="viewer">
-  <!-- Board stage -->
-  <div id="boardHost"></div>
+  <!-- Exactly ONE board container (standardized to #board) -->
+  <div id="board" aria-label="FLX6 Board"></div>
 
-  <!-- Minimal status bar (now with Fit/Fill/BG per your snippets) -->
+  <!-- Minimal status bar (Fit/Fill/BG/Theme + status) preserved from OG -->
   <div id="statusBar" role="status">
     <span id="wsStatus">WS: ⏳</span>
     <span id="midiStatus">MIDI: ⏳</span>
@@ -77,12 +79,12 @@
     document.body.dataset.role = ROLE;
     window.FLX_ROLE = ROLE;
 
-    // Initialize SVG board
-    await initBoard({ hostId: 'boardHost' });
+    // Initialize SVG board (updated hostId from 'boardHost' → 'board')
+    await initBoard({ hostId: 'board' });
 
-    // Attach Theme Designer (your snippet)
+    // Attach Theme Designer (OG behavior, selector updated)
     try {
-      THEME.attachThemeDesigner?.({ svgRoot: document.querySelector('#boardHost svg') });
+      THEME.attachThemeDesigner?.({ svgRoot: document.querySelector('#board svg') });
     } catch {}
 
     // Theme toggle
@@ -104,8 +106,8 @@
       midiStatusEl.textContent = 'MIDI: n/a';
     }
 
-    // Fit / Fill / Toggle BG buttons (your snippet)
-    const stage = document.getElementById('boardHost');
+    // Fit / Fill / Toggle BG buttons (stage updated to #board)
+    const stage = document.getElementById('board');
     const fitBtn = document.getElementById('fit');
     const fillBtn = document.getElementById('fill');
     const bgBtn  = document.getElementById('toggleBG');
@@ -220,6 +222,7 @@
   </script>
 
   <!-- WS bootstrap keeps ops/state handling (unchanged core behavior) -->
+  <!-- ONE (and only one) viewer bootstrap include -->
   <script type="module" src="/src/bootstrap-viewer.js"></script>
 
   <!-- Late-join fallback map loader (unchanged) -->
@@ -254,5 +257,12 @@
       }, TRY_AFTER_MS);
     })();
   </script>
+
+  <!-- REMOVE any legacy board embeds if you still have them:
+  <img src="/assets/board.svg">
+  <object data="/assets/board.svg" type="image/svg+xml"></object>
+  <embed src="/assets/board.svg" type="image/svg+xml">
+  (and any inline <svg> that represents the board)
+  -->
 </body>
 </html>
