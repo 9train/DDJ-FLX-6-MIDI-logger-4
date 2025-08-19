@@ -1,0 +1,16 @@
+{
+  "device": "Pioneer DDJ-FLX6",
+  "global": {
+    "jog":  { "intervalMs": 10, "rpm": 33.333, "alpha": 0.125, "beta": 0.0039, "scale": 0.004 },
+    "enc":  { "step": 0.01, "accel": 0.6 },
+    "softTakeoverWindow": 0.04
+  },
+  "controls": {
+    "xfader": { "type": "absolute", "min": 0, "max": 1, "curve": "linear", "deadzone": 0, "soft": true },
+    "ch1Gain":{ "type": "absolute", "min": 0, "max": 1.5, "curve": "log", "curveK": 2.4, "soft": true },
+    "ch1Hi":  { "type": "absolute", "min": 0, "max": 1, "curve": "s-curve", "curveK": 2.0, "soft": true },
+    "filter": { "type": "relative", "step": 0.015, "accel": 0.4, "clamp": [0,1] },
+    "browse": { "type": "relative", "step": 1.0, "accel": 0.0, "clamp": [0, 999999] },
+    "jog":    { "type": "jog", "scaleOverride": 0.0045 }
+  }
+}
