@@ -1,28 +1,30 @@
 // server/server.js
-// Static web server + WebSocket + optional MIDI→WS bridge (ESM version)
-// SOP merge: integrates rooms + map sync + presence + room-scoped MIDI relay
-// while keeping original behavior (HTTP server, origin allow-list,
-// HID/MIDI global broadcast, heartbeat, hello/join/ping).
+// ============================================================================
+// Static HTTP + WebSocket on a SINGLE listener (path /ws).
+// Room-aware state mirroring with ops snapshot-on-join (deduped per connection).
 //
-// NEW (SOP): Adds probe fan-out & ack collection per room
-//   - Host -> {type:'probe', id}  => server broadcasts to viewers and summarizes
-//   - Viewer -> {type:'probe:ack', id} => server counts unique acks per probe
+// ✅ Keeps OG features:
+//   • Static serving (multi-roots), health endpoints
+//   • Origin allow-list (env + hardcoded), presence broadcasts
+//   • Map persistence (load/save), map:set/ensure/get/sync
+//   • Probe fan-out + ack summary
+//   • Optional HID + Node MIDI bridges (not required for PRIME flow)
+//   • Heartbeat/ping cleanup
 //
-// NEW (SOP): Durable room maps with immediate replay to new viewers
-//   - Disk persistence to MAP_FILE (env) with debounce saves
-//   - Stable key hashing for change detection (djb2 of canonical JSON)
-//   - Supports {type:'map:set'},{type:'map:ensure'},{type:'map:get'}
-//   - Sends {type:'map:sync', map, key} to viewers (raw, not wrapped)
+// ✅ Implements your requested PRIME-like flow:
+//   • Host → {type:'ops', ops:[...]} → server updates room state and broadcasts to viewers
+//   • Viewers get a ONE-TIME snapshot of current state on join (no double full-send)
+//   • No raw MIDI/info forwarded to viewers by default
 //
-// NEW (SOP): Room-scoped live state mirroring via ops
-//   - getRoom() holds state: Map(target -> {on,intensity})
-//   - Host can send {type:'ops', ops:[...]} to update server snapshot and broadcast to viewers
-//   - Any client can request {type:'state:get'} to receive {type:'state:full', ops:[...]}
-//   - Viewer receives {type:'state:full'} automatically on join
+// ⚙️ Compatibility & flags:
+//   • FORWARD_INFO=1  → enable legacy host→viewer "info" relay
+//   • FORWARD_MIDI=1  → enable MIDI relay to viewers
+//   • HID_ENABLED=1   → enable HID bridge
+//   • MAP_FILE        → where room maps persist (default ./data/room_maps.json)
 //
-// SOP EDIT (this request): Share ONE HTTP listener with WS on path /ws
-//   - Eliminates second port and EADDRINUSE problems
-//   - WebSocketServer is created with { server, path:'/ws' }
+// Requirements: node >= 18, deps: express, ws
+// Start: node server/server.js
+// ============================================================================
 
 import path from 'path';
 import express from 'express';
@@ -31,36 +33,31 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import fsp from 'fs/promises';
-import { create as createHID } from './hid.js';
 
-// ---- __filename / __dirname equivalents in ESM
+// ---- __filename / __dirname (ESM)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// ---- Config (env with sensible defaults)
-const PORT        = Number(process.env.PORT || 8787);   // keep your preferred port here
-const HOST        = process.env.HOST || '0.0.0.0';      // bind to all interfaces
-const MIDI_INPUT  = process.env.MIDI_INPUT  || '';      // e.g., "DDJ-FLX6"
-const MIDI_OUTPUT = process.env.MIDI_OUTPUT || '';      // unused here, kept for future
+// ---- Config
+const PORT        = Number(process.env.PORT || 8787);
+const HOST        = process.env.HOST || '0.0.0.0';
+const MAP_FILE    = process.env.MAP_FILE || './data/room_maps.json';
+const FORWARD_INFO = process.env.FORWARD_INFO === '1'; // legacy info pass-through (off by default)
+const FORWARD_MIDI = process.env.FORWARD_MIDI === '1'; // MIDI relay to viewers (off by default)
 
-// Map persistence (SOP)
-const MAP_FILE = process.env.MAP_FILE || './data/room_maps.json';
-
-// ---- Optional Origin allow-list (non-breaking by default)
+// ---- Optional Origin Allow-list
 const SINGLE_ALLOWED = process.env.ALLOWED_ORIGIN?.trim();
 const MULTI_ALLOWED  = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
 
-// HARD-CODED entries — replace with your real domains if desired.
+// Update these to your real domains if you want a default allow-list.
 const HARDCODED_ALLOWED = [
   'https://www.setsoutofcontext.com',
   'https://setsoutofcontext.com',
-  // add any staging/subdomains you actually open from
 ];
 
-// Build the final allow-list = ENV (if any) ∪ HARDCODED (if any)
 const HAS_ALLOWLIST = !!SINGLE_ALLOWED || MULTI_ALLOWED.length > 0 || HARDCODED_ALLOWED.length > 0;
 const ALLOWED_ORIGINS = new Set([
   ...(SINGLE_ALLOWED ? [SINGLE_ALLOWED] : []),
@@ -68,7 +65,7 @@ const ALLOWED_ORIGINS = new Set([
   ...HARDCODED_ALLOWED,
 ]);
 
-// ---- Static web server
+// ---- HTTP app (multi-root static serving as in OG)
 const app = express();
 
 // Serve the public folder at root (includes /learned_map.json if you drop it there)
@@ -85,12 +82,10 @@ app.use('/assets', express.static(path.join(__dirname, '..', 'public', 'assets')
 app.use('/assets', express.static(path.join(__dirname, '..', 'src', 'assets')));
 app.use('/assets', express.static(path.join(__dirname, '..', 'assets')));
 
-// Health endpoints
+// Health endpoints & favicon silence
 app.get('/healthz', (_req, res) => res.status(200).send('ok'));
 app.get('/health',  (_req, res) => res.status(200).send('ok'));
 app.get('/',        (_req, res) => res.status(200).send('ok'));
-
-// Optional: silence favicon errors
 app.get('/favicon.ico', (_req, res) => res.sendStatus(204));
 
 // Create ONE HTTP server
@@ -99,45 +94,35 @@ const server = http.createServer(app);
 // Attach WS to the SAME server (path /ws) — single listener, no second port
 const wss = new WebSocketServer({ server, path: '/ws' });
 
-// --- Listen using process.env.PORT and bind to 0.0.0.0
-server.listen(PORT, HOST, () => {
-  console.log(`[HTTP] Listening on http://${HOST}:${PORT}`);
-  console.log(`[WS  ] Listening on ws://${HOST}:${PORT}/ws`);
-});
-
-// --- Global broadcast helper (used by HID/MIDI bridge)
-function broadcast(obj) {
-  const msg = JSON.stringify(obj);
-  for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN) client.send(msg);
-  }
-}
-
-// === Rooms with presence + lastMap (+ lastKey) ==============================
-// roomName -> { hosts:Set<WebSocket>, viewers:Set<WebSocket>, lastMap:Array|null, lastKey:string|null, state:Map }
+// --- Rooms with presence + map + ops state ==================================
+// roomName -> {
+//   hosts:Set<WebSocket>, viewers:Set<WebSocket>,
+//   lastMap:Array|null, lastKey:string|null,
+//   state:Map(target -> {on,intensity}),
+//   seq:number
+// }
 const rooms = new Map();
 
-// --- SOP: state Map added here
-function getRoom(roomName) {
+function getRoom(roomName = 'default') {
   if (!rooms.has(roomName)) {
     rooms.set(roomName, {
       hosts:   new Set(),
       viewers: new Set(),
       lastMap: null,
       lastKey: null,
-      state:   new Map(), // live UI state (target -> {on,intensity})
+      state:   new Map(),
+      seq:     0,
     });
   }
   return rooms.get(roomName);
 }
 
-// === OPS state helpers (viewer mirroring) ====================================
+// === OPS state helpers =======================================================
 function applyOpsToState(stateMap, ops){
   for (const op of ops || []) {
-    if (op && op.type === 'light' && op.target) {
-      if (op.on) stateMap.set(op.target, { on:true, intensity: op.intensity ?? 1 });
-      else stateMap.delete(op.target);
-    }
+    if (!op || op.type !== 'light' || !op.target) continue;
+    if (op.on) stateMap.set(op.target, { on: true, intensity: op.intensity ?? 1 });
+    else stateMap.delete(op.target);
   }
 }
 
@@ -146,7 +131,7 @@ function stateToOps(stateMap){
     type: 'light',
     target,
     on: !!st.on,
-    intensity: st.intensity ?? 1
+    intensity: st.intensity ?? 1,
   }));
 }
 
@@ -157,30 +142,15 @@ function broadcastPresence(roomName) {
     type: 'presence',
     room: roomName,
     hosts: r.hosts.size,
-    viewers: r.viewers.size
+    viewers: r.viewers.size,
   });
   for (const s of [...r.hosts, ...r.viewers]) {
     try { if (s.readyState === WebSocket.OPEN) s.send(msg); } catch {}
   }
 }
 
-// Keep viewer-scoped helper used by host → viewers info relay (unchanged wrapper)
-function broadcastToViewers_wrapped(room, payload, exceptWs) {
-  const msg = JSON.stringify({ type: 'info', payload, room });
-  for (const client of wss.clients) {
-    if (
-      client !== exceptWs &&
-      client.readyState === WebSocket.OPEN &&
-      client.room === room &&
-      client.role === 'viewer'
-    ) {
-      try { client.send(msg); } catch {}
-    }
-  }
-}
-
-// Raw viewer broadcast (no wrapping) for map:sync, ops, etc.
-function broadcastToViewers_raw(room, obj, exceptWs) {
+// Raw viewer broadcast (no wrapping) for ops/map/etc.
+function broadcastToViewers(room, obj, exceptWs) {
   const msg = JSON.stringify(obj);
   for (const client of wss.clients) {
     if (
@@ -194,12 +164,11 @@ function broadcastToViewers_raw(room, obj, exceptWs) {
   }
 }
 
-// Convenience send
 function send(ws, obj) {
   try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); } catch {}
 }
 
-// === Map persistence helpers ===============================================
+// === Map persistence helpers (unchanged OG behavior) ========================
 function keyOf(mapArr){
   const s = JSON.stringify(mapArr);
   let h=5381; for (let i=0;i<s.length;i++) h = ((h<<5)+h) ^ s.charCodeAt(i);
@@ -244,15 +213,13 @@ function scheduleSave(){
   }, 200);
 }
 
-// === Probe collection state ================================================
+// === Probe collection state (unchanged OG feature) ==========================
 const probeCollectors = new Map();
 
-// --- Load persisted maps before accepting traffic ---------------------------
-await loadMapsFromDisk();
-
-// === WS connection handling ==================================================
+// --- Server heartbeat (ping cleanup) ========================================
+const HEARTBEAT_MS = 30000;
 wss.on('connection', (ws, req) => {
-  // Allow-list guard — merged with allow-list and 1008 close
+  // Allow-list gate
   if (HAS_ALLOWLIST) {
     const origin = req?.headers?.origin || '';
     if (!ALLOWED_ORIGINS.has(origin)) {
@@ -269,7 +236,7 @@ wss.on('connection', (ws, req) => {
     }
   }
 
-  // Parse role/room from URL query (?role=host&room=default)
+  // Parse role/room from URL (?role=host&room=default) — still accept JOIN later
   try {
     const parsed = new URL(req.url, 'http://localhost');
     ws.role = (parsed.searchParams.get('role') || 'viewer').toLowerCase();
@@ -279,105 +246,95 @@ wss.on('connection', (ws, req) => {
     ws.room = 'default';
   }
 
-  // Per-connection id (for probe ack dedupe)
   ws.id = `c_${Math.random().toString(36).slice(2, 10)}`;
-
-  // Heartbeat
   ws.isAlive = true;
+  ws._snapshotSent = false; // dedupe: per-connection snapshot guard
   ws.on('pong', () => { ws.isAlive = true; });
 
-  // Initial hello back (handshake)
+  // Hello
   send(ws, { type: 'hello', ts: Date.now() });
 
-  // Place socket into room sets immediately
+  // Place into room
   const r0 = getRoom(ws.room);
-  if (ws.role === 'host') r0.hosts.add(ws); else r0.viewers.add(ws);
+  (ws.role === 'host' ? r0.hosts : r0.viewers).add(ws);
 
-  // Presence snapshot
+  // Presence snapshot to the new peer + room update
   send(ws, { type: 'presence', room: ws.room, hosts: r0.hosts.size, viewers: r0.viewers.size });
+  broadcastPresence(ws.room);
 
-  // If viewer joins and we have a map, send it immediately
+  // On viewer join, replay map then state snapshot
   if (ws.role === 'viewer' && r0.lastMap && Array.isArray(r0.lastMap) && r0.lastMap.length) {
-    console.log(`[MAP] replay to new viewer id=${ws.id ?? 'n/a'} room="${ws.room}" entries=${r0.lastMap.length}`);
     send(ws, { type: 'map:sync', room: ws.room, map: r0.lastMap, key: r0.lastKey });
   }
-
-  // Viewer gets full live state snapshot on join
-  if (ws.role === 'viewer') {
-    const opsSnap = stateToOps(r0.state);
-    send(ws, { type: 'state:full', ops: opsSnap });
+  if (ws.role === 'viewer' && r0.state.size && !ws._snapshotSent) {
+    const seq = ++r0.seq;
+    send(ws, { type: 'ops', seq, snapshot: true, ops: stateToOps(r0.state) });
+    ws._snapshotSent = true; // prevent double full-send on churn
   }
-
-  // Notify room about updated presence
-  broadcastPresence(ws.room);
 
   ws.on('message', (buf) => {
     let msg = null;
     try { msg = JSON.parse(buf.toString()); } catch {}
     if (!msg) return;
 
-    // Lightweight handshake support (kept)
-    if (msg.type === 'hello' && msg.role) {
-      ws.role = String(msg.role).toLowerCase();
-      return;
-    }
-
-    // Room join / role update
+    // JOIN / role-room update
     if (msg.type === 'join' || msg.type === 'hello') {
       const nextRole = msg.role ? String(msg.role).toLowerCase() : ws.role;
       const nextRoom = msg.room || ws.room || 'default';
 
-      const prev = getRoom(ws.room);
-      prev.hosts.delete(ws);
-      prev.viewers.delete(ws);
+      // Remove from old room sets
+      getRoom(ws.room).hosts.delete(ws);
+      getRoom(ws.room).viewers.delete(ws);
 
+      // Update
       ws.role = nextRole;
       ws.room = nextRoom;
-
+      ws._snapshotSent = false; // new association → allow new snapshot
       const r = getRoom(ws.room);
-      if (ws.role === 'host') r.hosts.add(ws); else r.viewers.add(ws);
+      (ws.role === 'host' ? r.hosts : r.viewers).add(ws);
 
+      // Presence + map + state replay
       send(ws, { type: 'presence', room: ws.room, hosts: r.hosts.size, viewers: r.viewers.size });
       broadcastPresence(ws.room);
 
       if (r.lastMap && Array.isArray(r.lastMap) && r.lastMap.length) {
         send(ws, { type: 'map:sync', room: ws.room, map: r.lastMap, key: r.lastKey });
       }
-
-      // send current live state to newly-joined viewer
-      if (ws.role === 'viewer') {
-        const opsSnap = stateToOps(r.state);
-        send(ws, { type: 'state:full', ops: opsSnap });
+      if (ws.role === 'viewer' && r.state.size && !ws._snapshotSent) {
+        const seq = ++r.seq;
+        send(ws, { type: 'ops', seq, snapshot: true, ops: stateToOps(r.state) });
+        ws._snapshotSent = true;
       }
       return;
     }
 
     // App-level ping (compat)
-    if (msg.type === 'ping') { return; }
+    if (msg.type === 'ping') return;
 
-    // === HOST -> OPS: update room snapshot and broadcast to viewers ==========
+    // === HOST → OPS ==========================================================
     if (ws.role === 'host' && msg.type === 'ops' && Array.isArray(msg.ops)) {
       const r = getRoom(ws.room);
       applyOpsToState(r.state, msg.ops);
-      broadcastToViewers_raw(ws.room, { type: 'ops', seq: msg.seq, ops: msg.ops }, ws);
+      const seq = ++r.seq;
+      broadcastToViewers(ws.room, { type: 'ops', seq, ops: msg.ops }, ws);
       return;
     }
 
-    // === VIEWER -> request full state explicitly ============================
+    // === VIEWER → request full state explicitly =============================
     if (msg.type === 'state:get') {
-      const r = getRoom(ws.room || 'default');
-      send(ws, { type: 'state:full', ops: stateToOps(r.state) });
+      const r = getRoom(ws.room);
+      send(ws, { type: 'ops', seq: r.seq, snapshot: true, ops: stateToOps(r.state) });
       return;
     }
 
-    // === Map set/ensure/get/sync ============================================
+    // === Map set/ensure/get ==================================================
     if (ws.role === 'host' && (msg.type === 'map:set' || msg.type === 'map:ensure') && Array.isArray(msg.map)) {
       const r = getRoom(ws.room);
       const inKey = msg.key || keyOf(msg.map);
       if (r.lastKey !== inKey) {
         r.lastMap = msg.map;
         r.lastKey = inKey;
-        broadcastToViewers_raw(ws.room, { type:'map:sync', room: ws.room, map: r.lastMap, key: r.lastKey }, ws);
+        broadcastToViewers(ws.room, { type:'map:sync', room: ws.room, map: r.lastMap, key: r.lastKey }, ws);
         scheduleSave();
         console.log(`[MAP] ${msg.type} room="${ws.room}" entries=${msg.map.length}`);
       }
@@ -414,7 +371,7 @@ wss.on('connection', (ws, req) => {
           id: msg.id,
           room: ws.room,
           count: done.acks.size,
-          totalViewers: r.viewers.size
+          totalViewers: r.viewers.size,
         });
         probeCollectors.delete(key);
       }, 800);
@@ -425,14 +382,14 @@ wss.on('connection', (ws, req) => {
       const key = `${ws.room}:${msg.id}`;
       const col = probeCollectors.get(key);
       if (col) {
-        const vid = ws.id || `v${Math.random().toString(36).slice(2,7)}`;
+        const vid = ws.id || `v_${Math.random().toString(36).slice(2,7)}`;
         col.acks.add(vid);
       }
       return;
     }
 
-    // === Room-scoped MIDI relay (unchanged feature)
-    if (msg.type === 'midi' && ws.room) {
+    // === Optional MIDI relay (gated) ========================================
+    if (FORWARD_MIDI && msg.type === 'midi' && ws.room) {
       const r = getRoom(ws.room);
       const packet = JSON.stringify({ ...msg, room: ws.room });
       for (const s of [...r.hosts, ...r.viewers]) {
@@ -441,9 +398,19 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
-    // === Original host→viewer relay preserved (info wrapper)
-    if (ws.role === 'host') {
-      broadcastToViewers_wrapped(ws.room, msg, ws);
+    // === Legacy host→viewer "info" relay (gated) ============================
+    if (FORWARD_INFO && ws.role === 'host') {
+      const packet = JSON.stringify({ type: 'info', payload: msg, room: ws.room });
+      for (const client of wss.clients) {
+        if (
+          client !== ws &&
+          client.readyState === WebSocket.OPEN &&
+          client.room === ws.room &&
+          client.role === 'viewer'
+        ) {
+          try { client.send(packet); } catch {}
+        }
+      }
     }
   });
 
@@ -455,8 +422,7 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// --- Server-side heartbeat: protocol pings every 30s (original)
-const HEARTBEAT_MS = 30000;
+// Server heartbeat (protocol-level ping)
 const hbInterval = setInterval(() => {
   for (const ws of wss.clients) {
     if (ws.isAlive === false) { ws.terminate(); continue; }
@@ -465,39 +431,38 @@ const hbInterval = setInterval(() => {
   }
 }, HEARTBEAT_MS);
 
-// Optional extra room-scoped heartbeat (env-gated)
-const ENABLE_ROOM_HEARTBEAT = process.env.ROOM_HEARTBEAT === '1';
-if (ENABLE_ROOM_HEARTBEAT) {
-  setInterval(() => {
-    for (const [_name, r] of rooms) {
-      for (const ws of [...r.hosts, ...r.viewers]) {
-        if (!ws.isAlive) { ws.terminate(); continue; }
-        ws.isAlive = false;
-        try { ws.ping(); } catch {}
-      }
-    }
-  }, HEARTBEAT_MS);
-}
-
-// Clean up interval on shutdown
 process.on('SIGTERM', () => { clearInterval(hbInterval); server.close(()=>process.exit(0)); });
 process.on('SIGINT',  () => { clearInterval(hbInterval); server.close(()=>process.exit(0)); });
 
-// ---- Optional HID bridge (unchanged)
+// --- Optional HID bridge (unchanged) ----------------------------------------
 const HID_ENABLED = process.env.HID_ENABLED === '1';
 if (HID_ENABLED) {
-  const hid = createHID({ enabled: true });
-  hid.on('info',  (info) => broadcast(info));
-  hid.on('log',   (m)    => console.log('[HID]', m));
-  hid.on('error', (e)    => console.warn('[HID] error:', e?.message || e));
+  try {
+    const { create: createHID } = await import('./hid.js');
+    const hid = createHID({ enabled: true });
+    hid.on('info',  (info) => {
+      if (FORWARD_INFO) {
+        // only forward if info relay is enabled; otherwise host→ops path should be used
+        const packet = JSON.stringify({ type: 'info', payload: info });
+        for (const client of wss.clients) {
+          if (client.readyState === WebSocket.OPEN) { try { client.send(packet); } catch {} }
+        }
+      }
+    });
+    hid.on('log',   (m)    => console.log('[HID]', m));
+    hid.on('error', (e)    => console.warn('[HID] error:', e?.message || e));
+  } catch (e) {
+    console.warn('[HID] bridge unavailable:', e?.message || e);
+  }
 }
 
-// ---- Optional: MIDI → WS bridge (Node side) (unchanged)
-let midiInput = null;
+// --- Optional: MIDI → WS bridge (Node side) ---------------------------------
 try {
   const mod = await import('easymidi');
   const easymidi = mod.default ?? mod;
 
+  const MIDI_INPUT  = process.env.MIDI_INPUT  || '';
+  const MIDI_OUTPUT = process.env.MIDI_OUTPUT || '';
   const inputs = easymidi.getInputs();
   const outputs = easymidi.getOutputs();
   console.log('[MIDI] Inputs:', inputs);
@@ -507,10 +472,10 @@ try {
     if (!inputs.includes(MIDI_INPUT)) {
       console.warn(`[MIDI] Input "${MIDI_INPUT}" not found. Set MIDI_INPUT to one of:`, inputs);
     } else {
-      midiInput = new easymidi.Input(MIDI_INPUT);
+      const midiInput = new easymidi.Input(MIDI_INPUT);
       console.log(`[MIDI] Listening on: ${MIDI_INPUT}`);
 
-      const send = (type, d) => {
+      const sendMidi = (type, d) => {
         const ch = typeof d.channel === 'number' ? d.channel + 1 : (d.ch ?? 1);
         const info =
           type === 'cc'
@@ -518,19 +483,31 @@ try {
             : (type === 'noteon' || type === 'noteoff')
               ? { type, ch, d1: d.note, d2: d.velocity, value: d.velocity }
               : { type, ch, ...d };
-        broadcast(info);
+        // Only forward if explicitly enabled
+        if (FORWARD_MIDI) {
+          const packet = JSON.stringify({ ...info, room: 'default' });
+          for (const client of wss.clients) {
+            if (client.readyState === WebSocket.OPEN) { try { client.send(packet); } catch {} }
+          }
+        }
       };
 
-      midiInput.on('noteon',  d => send('noteon', d));
-      midiInput.on('noteoff', d => send('noteoff', d));
-      midiInput.on('cc',      d => send('cc', d));
+      midiInput.on('noteon',  d => sendMidi('noteon', d));
+      midiInput.on('noteoff', d => sendMidi('noteoff', d));
+      midiInput.on('cc',      d => sendMidi('cc', d));
     }
   } else {
     console.log('[MIDI] Node bridge idle. Set MIDI_INPUT="DDJ-FLX6" (or your IAC bus) to enable.');
   }
 } catch {
-  console.warn('[MIDI] easymidi not available. Skipping Node MIDI bridge. (WebMIDI in the browser will still work.)');
+  console.warn('[MIDI] easymidi not available. Skipping Node MIDI bridge. (WebMIDI in the browser can still work.)');
 }
 
-// (export default is optional, handy for tests/tooling)
+// --- Start HTTP+WS -----------------------------------------------------------
+server.listen(PORT, HOST, () => {
+  console.log(`[HTTP] Listening on http://${HOST}:${PORT}`);
+  console.log(`[WS  ] Listening on ws://${HOST}:${PORT}/ws`);
+});
+
+// (export default is optional; handy for tests/tooling)
 export default app;
