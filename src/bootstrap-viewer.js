@@ -6,17 +6,39 @@
 // ─ Preserves OG robustness: status surfacing, probe:ack, snapshot re-asks,
 //   legacy map:get fallback, wsClient exposure, optional logger helper.
 // ─ Leaves your recent viewer UI cleanups intact (no extra UI mounted here).
+//
+// SOP additions:
+// ─ Singleton boot guard & container sanity: ensure exactly one <div id="board">,
+//   remove any duplicates and legacy #boardHost before loading the SVG.
+//   (Does NOT touch SVG internals if already mounted.)
 
 import { connectWS } from '/src/ws.js';
 import { getWSURL }  from '/src/roles.js';
 import { applyOps }  from '/src/engine/ops.js';
 
-// Singleton guard (SOP-safe): prevents accidental double-boot if the script
-// is included twice. No behavior change if included once.
+// === Singleton boot guard & container sanity ================================
 if (window.__FLX6_VIEWER_BOOTED__) {
-  // Already booted — do nothing (prevents duplicate boards or duplicate sockets)
+  console.warn('[viewer] bootstrap already ran; skipping');
 } else {
   window.__FLX6_VIEWER_BOOTED__ = true;
+
+  // Keep exactly one div#board container; don't touch SVG internals
+  (() => {
+    const mounts = [...document.querySelectorAll('div#board')];
+    mounts.forEach((el, i) => {
+      if (i > 0) {
+        console.warn('[viewer] removing duplicate mount', el);
+        el.remove();
+      }
+    });
+
+    // If a legacy #boardHost exists, it’s a second stage — remove it to prevent double SVG loads
+    const host = document.getElementById('boardHost');
+    if (host) {
+      console.warn('[viewer] removing legacy #boardHost duplicate stage');
+      host.remove();
+    }
+  })();
 
   (async function main(){
     // --- Board container -----------------------------------------------------
@@ -46,7 +68,9 @@ if (window.__FLX6_VIEWER_BOOTED__) {
     // --- WS bootstrap (OG behavior preserved) ---------------------------------
     const qs    = new URLSearchParams(location.search);
     const room  = qs.get('room') || 'default';
-    const wsURL = (typeof window !== 'undefined' && window.WS_URL && String(window.WS_URL)) || getWSURL();
+    const wsURL =
+      (typeof window !== 'undefined' && window.WS_URL && String(window.WS_URL)) ||
+      getWSURL();
 
     // Viewers ignore raw MIDI/info entirely per the ops-only pipeline.
     const onInfo = () => {};
