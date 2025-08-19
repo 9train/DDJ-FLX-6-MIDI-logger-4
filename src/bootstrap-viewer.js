@@ -1,79 +1,114 @@
 // /src/bootstrap-viewer.js
-// Minimal viewer with: Recorder (Load/Play/Stop), Background toggle, Fit/Fill.
-// SOP MERGE: Preserves OG WS bootstrap behaviors (URL override, room resolution,
-// wsClient exposure, probe-ack w/ reconnect safety, status surfacing) and adds a
-// simple viewer UI scaffold while keeping the ops-only pipeline.
+// Viewer bootstrap using mountBoard() as the single source of truth for the board SVG.
+// ──────────────────────────────────────────────────────────────────────────────
+// PRESERVED (from OG):
+//  • WS bootstrap & URL override via roles.js
+//  • Room resolution (?room=...)
+//  • onMessage handling for {type:'state:full'|'ops'}
+//  • probe→ack handshake (+ reconnect safety)
+//  • window.wsClient / window.applyOps / window.recorder exposure
+//  • Recorder (Load/Play/Stop)
+//  • Fit/Fill + Background toggle scaffolding
 //
-// Viewer behavior:
-// - Loads /assets/board.svg (fallback inline SVG if unavailable)
-// - Menu supports: Recorder (Load/Play/Stop), Background toggle, Fit/Fill
-// - Ignores raw MIDI/info; only applies server {type:'state:full'|'ops'}
-// - Robust snapshot fetch on connect with delayed retries and legacy fallback
+// ADDED / CHANGED:
+//  • Uses mountBoard({ scopeOps:true }) to mount exactly one foreground SVG
+//  • No direct SVG fetch here (avoids duplicate boards)
+//  • Safe z-index layering (board above BG, below HUD if HUD > z-index)
+//
+// NOTE: This file expects viewer.html (or runtime) to provide either:
+//   <div id="app"></div>  or falls back to document.body
+//
+// If you have /src/launcher.js, it can wire buttons/shortcuts to the actions
+// defined at the bottom (optional; we keep graceful fallbacks).
+// ──────────────────────────────────────────────────────────────────────────────
 
-import { connectWS } from '/src/ws.js';
-import { getWSURL }  from '/src/roles.js';
-import { applyOps }  from '/src/engine/ops.js';
-import { createOpsRecorder } from '/src/engine/recorder.js';
+/* eslint-disable no-console */
+
+import { mountBoard }           from '/src/board.js';
+import { connectWS }            from '/src/ws.js';
+import { getWSURL }             from '/src/roles.js';
+import { applyOps }             from '/src/engine/ops.js';
+import { createOpsRecorder }    from '/src/engine/recorder.js';
+
+(() => {
+  if (window.__FLX6_VIEWER_BOOTED__) {
+    console.warn('[viewer] bootstrap already ran; skipping');
+    return;
+  }
+  window.__FLX6_VIEWER_BOOTED__ = true;
+})();
 
 (async function main(){
-  // === Layout scaffold =======================================================
+  // === Layout scaffold (kept minimal, matches OG intent) =====================
   const root = document.getElementById('app') || document.body;
 
-  // Optional background layer (toggled by menu)
+  // Background layer (toggle via actions.toggleBG)
   const bg = document.createElement('div');
   bg.id = 'viewer-bg';
-  bg.style.position = 'fixed';
-  bg.style.inset = '0';
-  bg.style.background = 'radial-gradient(100% 100% at 50% 0%, #0c0c0c 0%, #050505 70%)';
-  bg.style.opacity = '0';
-  bg.style.transition = 'opacity .18s ease';
-  bg.style.zIndex = '-1';
+  Object.assign(bg.style, {
+    position: 'fixed',
+    inset: '0',
+    background: 'radial-gradient(100% 100% at 50% 0%, #0c0c0c 0%, #050505 70%)',
+    opacity: '0',
+    transition: 'opacity .18s ease',
+    zIndex: '0'
+  });
   root.appendChild(bg);
 
-  // Board container
+  // Board wrap — centers the board; Fit/Fill controlled by data-fit attr
   const wrap = document.createElement('div');
   wrap.id = 'board-wrap';
-  wrap.style.position = 'fixed';
-  wrap.style.inset = '0';
-  wrap.style.display = 'grid';
-  wrap.style.placeItems = 'center';
-  wrap.style.background = 'transparent';
-  wrap.dataset.fit = 'contain'; // contain|cover via preserveAspectRatio
+  Object.assign(wrap.style, {
+    position: 'fixed',
+    inset: '0',
+    display: 'grid',
+    placeItems: 'center',
+    background: 'transparent',
+    zIndex: '5'
+  });
+  wrap.dataset.fit = 'contain'; // 'contain' | 'cover'
   root.appendChild(wrap);
 
-  const boardEl = document.createElement('div');
-  boardEl.id = 'board';
-  boardEl.style.width = '100%';
-  boardEl.style.height = '100%';
-  wrap.appendChild(boardEl);
+  // Board mount container (the only place mountBoard will inject the <svg>)
+  let boardEl = document.getElementById('board');
+  if (!boardEl) {
+    boardEl = document.createElement('div');
+    boardEl.id = 'board';
+    // The board.js mount sets position/z-index if not already; leave width/height flexible.
+    boardEl.style.width  = '100%';
+    boardEl.style.height = '100%';
+    wrap.appendChild(boardEl);
+  } else {
+    // If #board exists elsewhere in DOM, move it into wrap for proper layout.
+    if (boardEl.parentElement !== wrap) wrap.appendChild(boardEl);
+  }
 
-  // Fit/Fill behavior controlled by container attr + CSS
+  // Aspect behavior via preserveAspectRatio (applied by the SVG itself)
+  // CSS fallback: ensure any mounted <svg> fills the grid cell
   const style = document.createElement('style');
   style.textContent = `
     #board svg { width: 100%; height: 100%; }
-    #board-wrap[data-fit="contain"] #board svg { preserveAspectRatio: xMidYMid meet; }
-    #board-wrap[data-fit="cover"]   #board svg { preserveAspectRatio: xMidYMid slice; }
+    /* If your SVG honors preserveAspectRatio, contain/cover behavior is inherent.
+       If you require enforcement, add a small helper script/attr switch. */
   `;
   (document.head || document.getElementsByTagName('head')[0]).appendChild(style);
 
-  // Load default SVG board
-  async function loadDefaultBoard() {
-    try {
-      const r = await fetch('/assets/board.svg', { cache: 'no-store' });
-      boardEl.innerHTML = await r.text();
-    } catch {
-      boardEl.innerHTML = `<svg viewBox="0 0 200 100" width="600" height="300">
-        <rect x="0" y="0" width="200" height="100" fill="#111"/>
-        <circle id="LED_TEST" cx="100" cy="50" r="22" fill="#333" stroke="#777" stroke-width="2"/>
-        <text x="100" y="90" text-anchor="middle" fill="#aaa" font-size="10">LED_TEST</text>
-      </svg>`;
-    }
+  // === Mount the board (single source of truth) ==============================
+  // This injects exactly one <svg> into #board, dedupes strays, and sets __OPS_ROOT.
+  const stage = await mountBoard({
+    containerId: 'board',
+    url: '/assets/board.svg',
+    cacheBust: true,
+    scopeOps: true,   // sets window.__OPS_ROOT = stage.svg
+    zIndex: 10        // keep board above backgrounds; HUD should use higher z-index if needed
+  });
+  // Expose for convenience
+  if (typeof window !== 'undefined') {
+    window.viewerStage = stage; // { mount, svg, url, query, queryAll, byId, bbox, size }
   }
-  await loadDefaultBoard();
 
   // === Recorder (OPS playback) ==============================================
   const recorder = createOpsRecorder({ applyOps });
-
 
   // === WebSocket bootstrap (OG behavior preserved) ===========================
   const WS_ROLE = 'viewer';
@@ -87,7 +122,7 @@ import { createOpsRecorder } from '/src/engine/recorder.js';
   const room = qs.get('room') || 'default';
 
   // Viewers ignore raw MIDI/info entirely per the ops-only pipeline.
-  const onInfo  = () => {};
+  const onInfo   = () => {};
   const onStatus = (s) => { try { window.setWSStatus?.(s); } catch {} };
 
   // Apply incoming snapshots/deltas only; ignore other message types.
@@ -109,13 +144,13 @@ import { createOpsRecorder } from '/src/engine/recorder.js';
 
   // Expose for console/tests (OG behavior)
   if (typeof window !== 'undefined') {
-    window.wsClient  = wsClient;
-    window.applyOps  = applyOps;
-    window.recorder  = recorder;
+    window.wsClient = wsClient;
+    window.applyOps = applyOps;
+    window.recorder = recorder;
   }
 
   // --- Snapshot fetch: belt & suspenders + legacy fallback -------------------
-  const askState = () => { try { wsClient?.socket?.send?.(JSON.stringify({ type: 'state:get' })); } catch {} };
+  const askState     = () => { try { wsClient?.socket?.send?.(JSON.stringify({ type: 'state:get' })); } catch {} };
   const askMapLegacy = () => { try { wsClient?.socket?.send?.(JSON.stringify({ type: 'map:get' })); } catch {} };
 
   // On open: immediate ask + brief retries + legacy fallback
@@ -153,6 +188,43 @@ import { createOpsRecorder } from '/src/engine/recorder.js';
     const s = wsClient?.socket;
     if (s && !s.__probeAckInstalled) installProbeAck(s);
   }, 500);
+
+  // --- Actions: Fit/Fill, BG toggle, Recorder controls ----------------------
+  const actions = {
+    fit:      () => { wrap.dataset.fit = 'contain'; },
+    fill:     () => { wrap.dataset.fit = 'cover';   },
+    toggleBG: () => { bg.style.opacity = (bg.style.opacity === '1' ? '0' : '1'); },
+
+    // Recorder (viewer: Load/Play/Stop only)
+    recLoadFile: async (file) => {
+      try {
+        const text = await file.text();
+        recorder.loadFromText(text);
+      } catch (e) { console.warn('[viewer] recLoadFile failed', e); }
+    },
+    recLoadText: async (text) => {
+      try { recorder.loadFromText(text); } catch (e) { console.warn('[viewer] recLoadText failed', e); }
+    },
+    recPlay: () => { try { recorder.play({ speed: 1.0, loop: false }); } catch {} },
+    recStop: () => { try { recorder.stop(); } catch {} },
+  };
+
+  // Optional: integrate with launcher UI if present
+  try {
+    const { initLauncher } = await import('/src/launcher.js');
+    initLauncher({
+      actions,
+      ui: {
+        showPanels:  false,
+        showPresets: false,
+        recorder: { showStart: false, showSave: false }
+      },
+      mountPresetUI: () => {}
+    });
+  } catch {
+    // No launcher present: expose actions so you can bind keys/buttons manually.
+    if (typeof window !== 'undefined') window.viewerActions = actions;
+  }
 
   // --- Optional lightweight debug logs (non-breaking) ------------------------
   try {
