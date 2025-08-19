@@ -23,75 +23,71 @@
  *  - Keep all existing host logic fully intact
  */
 
+i/* eslint-disable no-console */
+
+/**
+ * Host bootstrap that:
+ *  - mounts the board SVG exactly once into #boardHost via mountBoard()
+ *  - connects as 'host' to WS
+ *  - converts raw "info" (MIDI) → ops using your existing dispatcher + map
+ *  - applies ops locally (host UI live) and broadcasts to viewers
+ */
+
 import { mountBoard }  from '/src/board.js';
 import { connectWS }   from '/src/ws.js';
 import { getWSURL }    from '/src/roles.js';
 import { applyOps }    from '/src/engine/ops.js';
 import * as dispatcher from '/src/engine/dispatcher.js';
 
-// Optional module; we’ll load it if present without failing if missing
+// Optional normalizer; load if present without failing if missing
 let normalizeMod = null;
-try {
-  normalizeMod = await import('/src/engine/normalize.js');
-} catch { /* optional */ }
+try { normalizeMod = await import('/src/engine/normalize.js'); } catch {}
 
-// === Singleton guard: never boot twice =======================================
 if (window.__FLX6_HOST_BOOTED__) {
   console.warn('[host] bootstrap already ran; skipping');
 } else {
   window.__FLX6_HOST_BOOTED__ = true;
 
   (async function main(){
-    // === 1) Ensure the unified foreground SVG is mounted ONCE =================
-    // Per recommendation, use #board as the single container.
-    // If #board doesn't exist, create it at the top-level app mount.
-    let mount = document.getElementById('board');
+    // —— Ensure #boardHost exists (single mount) ————————————————
+    let mount = document.getElementById('boardHost');
     if (!mount) {
       mount = document.createElement('div');
-      mount.id = 'board';
+      mount.id = 'boardHost';
       mount.style.position = 'relative';
       mount.style.width = '100%';
       mount.style.height = '100%';
       (document.getElementById('app') || document.body).prepend(mount);
     }
 
-    // Defensive: remove legacy embeds INSIDE the mount (prevents double SVGs)
-    // We DO NOT touch the SVG file, and we DON'T fetch/inline SVG ourselves.
+    // —— Defensive cleanup: remove legacy SECONDARY containers/embeds ————
+    // We KEEP #boardHost; we REMOVE #board and any direct board.svg embeds
     (() => {
-      const legacy = mount.querySelectorAll(
-        'img[src$="board.svg"], object[data$="board.svg"], embed[src$="board.svg"]'
-      );
-      legacy.forEach((el) => {
+      // Remove any stray #board containers to prevent “second board”
+      document.querySelectorAll('div#board').forEach((el) => {
+        console.warn('[host] removing legacy #board to keep single stage');
+        el.remove();
+      });
+      // Remove legacy direct embeds inside #boardHost (we mount via mountBoard)
+      mount.querySelectorAll('img[src$="board.svg"],object[data$="board.svg"],embed[src$="board.svg"]').forEach((el) => {
         console.warn('[host] removing legacy embedded board element to avoid duplicates:', el);
         el.remove();
       });
-
-      // If a legacy #boardHost exists alongside #board, remove it (second stage)
-      const hostStage = document.getElementById('boardHost');
-      if (hostStage && hostStage !== mount) {
-        console.warn('[host] removing legacy #boardHost to avoid double stage');
-        hostStage.remove();
-      }
     })();
 
-    // Mount the board via the single source of truth
-    // NOTE: If your board.js already has a DEFAULT_SVG_URL, you can omit `url`.
+    // —— Single source of truth: mountBoard into #boardHost ——————————
     const stage = await mountBoard({
-      containerId: 'board',  // << exact container per recommendation
-      scopeOps:    true,     // expose window.__OPS_ROOT = <svg>
-      zIndex:      10,       // keep SVG above background layers
-      cacheBust:   true,     // avoid stale caches during dev
-      // url: '/assets/board.svg', // optional override if needed
+      containerId: 'boardHost',
+      scopeOps:    true,   // sets window.__OPS_ROOT = <svg>
+      zIndex:      10,
+      cacheBust:   true,   // dev-friendly; set false in prod if desired
+      // url: '/assets/board.svg', // optional if board.js already has a default
     });
-
-    // Expose for console diagnostics if helpful
     window.hostStage = stage;
 
-    // === 2) WS Client ========================================================
+    // —— WS Client ————————————————————————————————————————————————
     const WS_ROLE = 'host';
-    const wsURL =
-      (window.WS_URL && String(window.WS_URL)) || getWSURL();
-
+    const wsURL = (window.WS_URL && String(window.WS_URL)) || getWSURL();
     const qs   = new URLSearchParams(location.search);
     const room = qs.get('room') || 'default';
 
@@ -101,49 +97,32 @@ if (window.__FLX6_HOST_BOOTED__) {
       room,
       onStatus: (s) => { try { window.setWSStatus?.(s); } catch {} },
       onMessage: (m) => {
-        // Host typically ignores inbound ops; keep probe→ack for health checks.
         if (m?.type === 'probe') {
           try { wsClient?.socket?.send?.(JSON.stringify({ type: 'probe:ack', id: m.id })); } catch {}
         }
       },
     });
-
     window.wsClient = wsClient;
 
-    // === 3) MIDI/info → ops pipeline =========================================
-    const infoToOps      = dispatcher?.infoToOps || ((_) => []);
-    const normalizeInfo  = normalizeMod?.normalizeInfo || ((x) => x);
+    // —— MIDI/info → ops ————————————————————————————————————————————
+    const infoToOps     = dispatcher?.infoToOps || ((_) => []);
+    const normalizeInfo = normalizeMod?.normalizeInfo || ((x) => x);
 
     function sendOps(ops){
       if (!Array.isArray(ops) || ops.length === 0) return;
-
-      // Apply locally so host UI stays live
       try { applyOps(ops); } catch (e) { console.warn('[host] applyOps failed', e); }
-
-      // Broadcast to viewers
       try {
         const s = wsClient?.socket;
-        if (s?.readyState === 1) {
-          s.send(JSON.stringify({ type: 'ops', ops }));
-        }
-      } catch (e) {
-        console.warn('[host] ws send failed', e);
-      }
+        if (s?.readyState === 1) s.send(JSON.stringify({ type: 'ops', ops }));
+      } catch (e) { console.warn('[host] ws send failed', e); }
     }
     window.sendOps = sendOps;
 
-    // If your MIDI layer calls window.consumeInfo(raw), wire it here.
     window.consumeInfo = function(raw){
-      try {
-        const info = normalizeInfo(raw);
-        const ops  = infoToOps(info);
-        sendOps(ops);
-      } catch (e) {
-        console.warn('[host] consumeInfo failed', e);
-      }
+      try { sendOps(infoToOps(normalizeInfo(raw))); }
+      catch (e) { console.warn('[host] consumeInfo failed', e); }
     };
 
-    // Optional: signal readiness (if your server supports snapshot logic)
     wsClient?.socket?.addEventListener?.('open', () => {
       try { wsClient.socket.send(JSON.stringify({ type: 'state:host:ready' })); } catch {}
     });
