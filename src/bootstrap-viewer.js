@@ -1,30 +1,20 @@
 // /src/bootstrap-viewer.js
-// ============================================================================
-// SOP MERGE: Viewer bootstrap with ultra-clean UI, minimal chrome.
-//
-// Preserves OG behavior:
-//  • Loads the primary SVG (with safe fallback)
-//  • Connects as 'viewer' (room via ?room=, URL override via window.WS_URL or roles.js)
-//  • Applies snapshot (once) + live ops in-order (ops-only pipeline)
-//  • Status surfacing hook (window.setWSStatus?), probe:ack, snapshot re-asks,
-//    legacy map:get fallback, wsClient exposure, optional logger helper
-//
-// Adds (from your snippet to fix "viewer sees 2 boards"):
-//  • Singleton guard to prevent double-boot/double-injection
-//  • Defensive cleanup of legacy <img/object/embed> or stray inline <svg> so only one board remains
-//  • Pre-injection container clear (replaceChildren) to avoid duplicates
-//
-// Net effect: exactly one viewer board, OG robustness intact.
-// ============================================================================
+// Viewer bootstrap with ultra-clean UI, minimal chrome.
+// ─ Loads the board SVG (with safe fallback)
+// ─ Connects as 'viewer' (room from ?room=, URL override via window.WS_URL)
+// ─ Applies snapshot (once) + live ops in-order (ops-only pipeline)
+// ─ Preserves OG robustness: status surfacing, probe:ack, snapshot re-asks,
+//   legacy map:get fallback, wsClient exposure, optional logger helper.
+// ─ Leaves your recent viewer UI cleanups intact (no extra UI mounted here).
 
 import { connectWS } from '/src/ws.js';
 import { getWSURL }  from '/src/roles.js';
 import { applyOps }  from '/src/engine/ops.js';
 
-// === Singleton guard: never boot the viewer twice ============================
+// Singleton guard (SOP-safe): prevents accidental double-boot if the script
+// is included twice. No behavior change if included once.
 if (window.__FLX6_VIEWER_BOOTED__) {
-  // Already booted; bail to prevent duplicate boards (SOP: do not break anything).
-  // You still keep a working viewer; this avoids double-injection.
+  // Already booted — do nothing (prevents duplicate boards or duplicate sockets)
 } else {
   window.__FLX6_VIEWER_BOOTED__ = true;
 
@@ -40,24 +30,7 @@ if (window.__FLX6_VIEWER_BOOTED__) {
       (document.getElementById('app') || document.body).appendChild(boardEl);
     }
 
-    // --- Defensive cleanup: remove any legacy embeds/duplicates ---------------
-    // If older HTML still contains <img/object/embed> or an inline <svg>, remove them.
-    // We only keep the single #board element; this preserves your clean UI.
-    document
-      .querySelectorAll('img[src$="board.svg"],object[data$="board.svg"],embed[src$="board.svg"]')
-      .forEach(n => n.remove());
-
-    // Remove any inline board <svg> that lives outside #board (stray legacy siblings).
-    [...document.querySelectorAll('svg')].forEach(svg => {
-      if (svg.parentElement && svg.parentElement !== boardEl) {
-        if (!svg.closest('#board')) svg.remove();
-      }
-    });
-
-    // Ensure our container is empty before we inject fresh SVG
-    boardEl.replaceChildren();
-
-    // --- Load the primary SVG (no-store to avoid stale assets) ----------------
+    // Load the primary SVG (no-store to avoid stale assets).
     try {
       const r = await fetch('/assets/board.svg', { cache: 'no-store' });
       boardEl.innerHTML = await r.text();
@@ -70,7 +43,7 @@ if (window.__FLX6_VIEWER_BOOTED__) {
       </svg>`;
     }
 
-    // --- WS bootstrap (OG behavior preserved) --------------------------------
+    // --- WS bootstrap (OG behavior preserved) ---------------------------------
     const qs    = new URLSearchParams(location.search);
     const room  = qs.get('room') || 'default';
     const wsURL = (typeof window !== 'undefined' && window.WS_URL && String(window.WS_URL)) || getWSURL();
@@ -79,15 +52,12 @@ if (window.__FLX6_VIEWER_BOOTED__) {
     const onInfo = () => {};
     const onStatus = (s) => { try { window.setWSStatus?.(s); } catch {} };
 
-    // Accept both {type:'state:full', ops:[...]} and {type:'ops', ops:[...]}
-    const handleOpsArray = (ops) => {
-      if (Array.isArray(ops) && ops.length) applyOps(ops);
-    };
-
+    // Apply incoming snapshots/deltas only; ignore other message types.
     const onMessage = (m) => {
       if (!m || typeof m !== 'object') return;
-      if ((m.type === 'state:full' || m.type === 'ops') && Array.isArray(m.ops)) {
-        handleOpsArray(m.ops);
+      // Accept both {type:'state:full', ops:[...]} and {type:'ops', ops:[...]}
+      if ((m.type === 'state:full' || m.type === 'ops') && Array.isArray(m.ops) && m.ops.length) {
+        applyOps(m.ops);
       }
       // silently ignore others
     };
@@ -99,8 +69,6 @@ if (window.__FLX6_VIEWER_BOOTED__) {
       onStatus,
       onInfo,     // no-op for viewer
       onMessage,  // handles ops/state
-      // Also wire onOps for servers that emit {type:'ops'} via a dedicated path
-      onOps: (msg) => handleOpsArray(msg?.ops),
     });
 
     // Expose for console/tests (OG behavior)
@@ -109,24 +77,24 @@ if (window.__FLX6_VIEWER_BOOTED__) {
       window.applyOps = applyOps;
     }
 
-    // --- Snapshot fetch: belt & suspenders + legacy fallback ------------------
+    // --- Snapshot fetch: belt & suspenders + legacy fallback -------------------
     const askState = () => { try { wsClient?.socket?.send?.(JSON.stringify({ type: 'state:get' })); } catch {} };
     const askMapLegacy = () => { try { wsClient?.socket?.send?.(JSON.stringify({ type: 'map:get' })); } catch {} };
 
-    // On open: immediate ask + brief retries + legacy fallback (matches OG cadence)
+    // On open: immediate ask + brief retries + legacy fallback
     wsClient?.socket?.addEventListener?.('open', () => {
       askState();
       setTimeout(askState, 300);
       setTimeout(askMapLegacy, 500);
     });
 
-    // Extra delayed attempt (prior revisions did a delayed ask; keep it)
+    // Extra delayed attempt (matches prior revisions’ delayed ask)
     setTimeout(() => {
       askState();
       setTimeout(askMapLegacy, 200);
     }, 800);
 
-    // --- Probe-ack (OG robustness) -------------------------------------------
+    // --- Probe-ack (OG robustness) --------------------------------------------
     function installProbeAck(ws) {
       if (!ws || ws.__probeAckInstalled) return;
       ws.__probeAckInstalled = true;
@@ -149,7 +117,7 @@ if (window.__FLX6_VIEWER_BOOTED__) {
       if (s && !s.__probeAckInstalled) installProbeAck(s);
     }, 500);
 
-    // --- Optional: console logger helper (toggle at will) ---------------------
+    // --- Optional: console logger helper (toggle at will) ----------------------
     // Call window.__installViewerLogger() in DevTools to log raw frames.
     window.__installViewerLogger = () => {
       const s = wsClient?.socket;
