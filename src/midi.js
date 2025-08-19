@@ -1,6 +1,26 @@
-// src/midi.js
+// /src/midi.js
 // Robust WebMIDI reader with safe globals + clear status updates.
 // Works in ESM or plain script. No optional chaining, no default params syntax.
+// SOP: OG preserved; added FEEL integration + snippet-based handleCC routing.
+
+// Requires:
+//   /src/midi-feel.js            → export function buildFeelRuntime(config)
+//   /src/engine/feel-loader.js   → export async function loadFeelConfig({ deviceName, url })
+//   /maps/flx6-feel.json         → feel config (served by your dev server)
+
+import { buildFeelRuntime } from '/src/midi-feel.js';
+import { loadFeelConfig }   from '/src/engine/feel-loader.js';
+
+// ---------- FEEL globals ----------
+var FEEL = null;
+var FEEL_CFG = { deviceName: 'UNKNOWN', controls: {} };
+
+// Allow external access for console tuning:
+try {
+  if (typeof window !== 'undefined') {
+    window.__MIDI_FEEL__ = { FEEL: FEEL, FEEL_CFG: FEEL_CFG };
+  }
+} catch (e) {}
 
 // Define console helpers immediately; safe no-ops outside the browser.
 try {
@@ -68,7 +88,11 @@ export async function initWebMIDI(opts) {
   var handler = function (ev) {
     var info = decodeMIDI(ev && ev.data);
     if (!info) return;
-    // 1) your app
+
+    // ===== FEEL-AWARE ROUTING via your snippet (non-breaking) =====
+    try { if (info.type === 'cc') handleCC(info); } catch (eFeel) { try { console.warn('[MIDI/feel] routing error', eFeel); } catch(_){} }
+
+    // 1) your app callback
     try { onInfo(info); } catch(e){}
     // 2) optional console hooks; never throw
     try { if (typeof window !== 'undefined' && window.FLX_LEARN_HOOK)   window.FLX_LEARN_HOOK(info); } catch(e){}
@@ -84,7 +108,6 @@ export async function initWebMIDI(opts) {
       var t = e && e.port && e.port.type;
       var n = e && e.port && e.port.name;
       var s = e && e.port && e.port.state;
-      // only log if we have a complete tuple
       if (t && n && s) log('[WebMIDI] state:', t + ' "' + n + '" ' + s);
     } catch (err) {}
   };
@@ -103,14 +126,11 @@ export async function initWebMIDI(opts) {
   return makeHandle(access, input, onStatus, log, handler, stateHandler);
 }
 
-// ---- SOP addition: snippet-compatible bootstrap --------------------
-// Mirrors your snippet behavior without changing the main API.
-// Usage (ESM):   import { bootMIDIFromQuery } from './src/midi.js'; await bootMIDIFromQuery();
-// Usage (script): window.FLXBootMIDI(). Returns the same handle as initWebMIDI.
+// ---- SOP addition: snippet-compatible bootstrap (feels integrated) ----
+// Usage: await bootMIDIFromQuery();  // picks ?midi= or defaults to DDJ-FLX6
 export async function bootMIDIFromQuery(overrides) {
   overrides = overrides || {};
   if (typeof window === 'undefined') {
-    // Keep semantics: fail gracefully outside browser
     return initWebMIDI({
       onInfo: function(){},
       onStatus: function(){},
@@ -122,9 +142,19 @@ export async function bootMIDIFromQuery(overrides) {
   var search = '';
   try { search = String(window.location && window.location.search || ''); } catch(e) { search = ''; }
   var qs = new URLSearchParams(search);
-  var preferred = qs.get('midi') || 'DDJ-FLX6';
+  var preferred = qs.get('midi') || window.__MIDI_DEVICE_NAME__ || 'DDJ-FLX6';
 
-  // Resolve callbacks with safe fallbacks:
+  // Load FEEL config first (non-fatal if it fails)
+  try {
+    FEEL_CFG = await loadFeelConfig({ deviceName: preferred });
+    FEEL = buildFeelRuntime(FEEL_CFG);
+    try { if (typeof window !== 'undefined') window.__MIDI_FEEL__ = { FEEL: FEEL, FEEL_CFG: FEEL_CFG }; } catch(_){}
+  } catch (e) {
+    try { console.warn('[MIDI] feel config load failed', e); } catch(_){}
+    FEEL_CFG = { deviceName: preferred, controls: {} };
+    FEEL = buildFeelRuntime(FEEL_CFG);
+  }
+
   var onInfo = (typeof overrides.onInfo === 'function')
     ? overrides.onInfo
     : (function(){
@@ -151,16 +181,15 @@ export async function bootMIDIFromQuery(overrides) {
   try {
     var handle = await initWebMIDI({
       onInfo: onInfo,
-      onStatus: onStatus,              // flips UI status like “ready: <name>”
+      onStatus: onStatus,
       preferredInput: preferred,
       log: logFlag
     });
     try { console.log('[MIDI] init OK'); } catch(e){}
     return handle;
-  } catch (e) {
-    try { console.warn('[MIDI] init failed', e); } catch(err){}
+  } catch (e2) {
+    try { console.warn('[MIDI] init failed', e2); } catch(err){}
     try { onStatus('host: off'); } catch(err2){}
-    // Return a noop handle so callers never crash
     return {
       get access(){ return null; },
       get input(){ return null; },
@@ -177,7 +206,50 @@ try {
   }
 } catch(e){}
 
-// ---- internals ------------------------------------------------------
+// ===================== SNIPPET ADDITIONS (Feel routing helpers) =====================
+
+// CC map (extend as needed)
+var CC = { XFADER: 0x10 };
+
+// Safe getters + simple absolute processor fallback
+function feelCfg(id){
+  try {
+    if (FEEL_CFG && FEEL_CFG.controls && FEEL_CFG.controls[id]) return FEEL_CFG.controls[id];
+  } catch(e){}
+  return {};
+}
+
+function feelAbs(id, raw, cfg){
+  try {
+    if (FEEL && FEEL.processAbsolute) return FEEL.processAbsolute(id, raw, cfg || {});
+  } catch(e){}
+  var v = (raw || 0) / 127;
+  if (v < 0) v = 0; else if (v > 1) v = 1;
+  return { apply: true, value: v };
+}
+
+// Centralized CC handler using FEEL (extend with more controls later)
+function handleCC(info) {
+  // Crossfader (absolute) on CC 0x10
+  if (info.controller === CC.XFADER) {
+    var cfg = feelCfg('xfader');
+    var out = feelAbs('xfader', info.value, cfg);
+    if (out && out.apply) {
+      try {
+        if (typeof dispatcher !== 'undefined' && dispatcher && dispatcher.emit) {
+          dispatcher.emit('xfader:set', out.value);
+        }
+      } catch(e){}
+    }
+    return;
+  }
+
+  // Add more here, e.g. filter/jog:
+  // if (info.controller === 0x11) { /* processRelative('filter', delta, cfg) */ }
+  // if (info.controller === 0x21) { /* processJog(delta, cfg) */ }
+}
+
+// ===================== internals (unchanged OG) =====================
 
 function exposeGlobals(access, input, onStatus, log, handler, stateHandler) {
   if (typeof window === 'undefined') return;
@@ -194,9 +266,7 @@ function exposeGlobals(access, input, onStatus, log, handler, stateHandler) {
         var arr  = toArray(access.inputs && access.inputs.values && access.inputs.values());
         var next = pickInput(arr, name || '');
         if (!next) { console.warn('[WebMIDI] No such input:', name); return false; }
-        // detach old
         try { if (input && input.onmidimessage === handler) input.onmidimessage = null; } catch(e){}
-        // attach new
         input = next;
         input.onmidimessage = handler;
         onStatus('listening:' + input.name);
