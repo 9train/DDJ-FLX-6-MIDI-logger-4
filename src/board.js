@@ -1,15 +1,15 @@
 // /src/board.js
-// Loads assets/board.svg into #board, merges flx6_map.json with local mappings,
-// auto‑calibrates bounds for CH1–CH4 faders, tempos, crossfader,
-// adds jog wheel support, safe CSS‑only rotation for knobs/jogs,
-// and (optionally) applies semantic/umbrella classes via groups.js for theming.
-// Console helpers under window.FLXTest.
+// Single source of truth for loading assets/board.svg into #board, merging flx6_map.json
+// with local mappings, auto‑calibrating bounds for CH1–CH4 faders, tempos, crossfader,
+// adding jog wheel support, safe CSS‑only rotation for knobs/jogs, and (optionally)
+// applying semantic/umbrella classes via groups.js for theming. Console helpers under window.FLXTest.
 
 import { loadMappings as loadLocalMappings } from './mapper.js';
 
 const DEFAULT_SVG_URL = './assets/board.svg';
 const DEFAULT_MAP_URL = './flx6_map.json';
 
+// Global state
 let svgRoot = null;
 let unifiedMap = [];
 let fileMapCache = []; // keep the shipped map so we can re-merge when learned map updates
@@ -19,10 +19,14 @@ const lastCCValue    = Object.create(null);
 const knobAccumAngle = Object.create(null);
 const jogAngle       = Object.create(null); // per-target accumulated angle for jogs
 
+// ─────────────────────────────────────────────────────────────────────────────
+// NEW: Singleton guards for mountBoard
+let __mounting = null;
+let __mounted  = null;
+// ─────────────────────────────────────────────────────────────────────────────
+
 /* -------------------------
-   mountBoard (NEW)
-   Single source of truth for loading the board SVG into a container.
-   Uses existing initBoard so mappings/groups/calibration remain intact.
+   URL helper
 --------------------------*/
 function _appendCacheBust(url, enable = true) {
   if (!enable) return url;
@@ -34,71 +38,6 @@ function _appendCacheBust(url, enable = true) {
     const sep = url.includes('?') ? '&' : '?';
     return url + sep + '_=' + Date.now();
   }
-}
-
-/**
- * @param {Object} opts
- * @param {string}  [opts.containerId='board']      // default aligned to existing bootstraps
- * @param {string}  [opts.url=DEFAULT_SVG_URL]
- * @param {boolean} [opts.cacheBust=true]
- * @param {boolean} [opts.scopeOps=false]           // set window.__OPS_ROOT to the mounted <svg>
- * @param {number}  [opts.zIndex=10]
- * @returns {Promise<{mount:HTMLElement, svg:SVGSVGElement, url:string,
- *                    query:(sel:string)=>Element|null,
- *                    queryAll:(sel:string)=>NodeListOf<Element>,
- *                    byId:(id:string)=>Element|null,
- *                    bbox:()=>DOMRect, size:()=>{width:number,height:number}}>}
- */
-export async function mountBoard({
-  containerId = 'board',
-  url         = DEFAULT_SVG_URL,
-  cacheBust   = true,
-  scopeOps    = false,
-  zIndex      = 10,
-} = {}) {
-  // Ensure the mount exists (don’t silently pick another id)
-  let mount = document.getElementById(containerId);
-  if (!mount) {
-    // create it to be resilient during migration (harmless if it already exists)
-    mount = document.createElement('div');
-    mount.id = containerId;
-    mount.style.position = 'relative';
-    mount.style.width = '100%';
-    mount.style.height = '100%';
-    (document.getElementById('app') || document.body).appendChild(mount);
-  }
-
-  // Stacking context if requested
-  try {
-    if (zIndex != null) {
-      if (!mount.style.position) mount.style.position = 'relative';
-      mount.style.zIndex = String(zIndex);
-    }
-  } catch {}
-
-  // Reuse your existing initializer to keep all behavior unchanged
-  const svgUrl = _appendCacheBust(url, cacheBust);
-  await initBoard({ hostId: containerId, svgUrl, mapUrl: DEFAULT_MAP_URL });
-
-  const svg = mount.querySelector('svg');
-  if (!svg) throw new Error('[board] mountBoard: SVG failed to load');
-
-  if (scopeOps && typeof window !== 'undefined') {
-    window.__OPS_ROOT = svg;
-  }
-
-  const query    = (sel) => svg.querySelector(sel);
-  const queryAll = (sel) => svg.querySelectorAll(sel);
-  const byId     = (id)  => getElByAnyIdIn(svg, id);
-  const bbox     = () => svg.getBBox();
-  const size     = () => {
-    const vb = svg.viewBox?.baseVal;
-    const width  = (vb && vb.width)  || svg.width?.baseVal?.value  || mount.clientWidth  || 0;
-    const height = (vb && vb.height) || svg.height?.baseVal?.value || mount.clientHeight || 0;
-    return { width, height };
-  };
-
-  return { mount, svg, url: svgUrl, query, queryAll, byId, bbox, size };
 }
 
 /* -------------------------
@@ -124,7 +63,7 @@ function getElByAnyId(id){ return getElByAnyIdIn(svgRoot, id); }
 /* -------------------------
    Jog helpers
 --------------------------*/
-// PATCH 1: export decodeRelative7 so other modules can import it.
+// Export so other modules can import it if needed.
 export function decodeRelative7(v){
   // Typical relative 7-bit: 1..63 = +steps, 65..127 = -steps, 0/64 = no move
   if (v === 0 || v === 64) return 0;
@@ -187,17 +126,10 @@ function infoKey(info) {
 }
 
 /* -------------------------
-   Init
+   Post‑load initialization (no SVG fetch here)
 --------------------------*/
-export async function initBoard({ hostId, svgUrl = DEFAULT_SVG_URL, mapUrl = DEFAULT_MAP_URL } = {}) {
-  const host = document.getElementById(hostId);
-  if (!host) throw new Error(`Board host #${hostId} not found`);
-
-  // Load SVG fresh
-  const svgTxt = await (await fetch(svgUrl, { cache: 'no-store' })).text();
-  host.innerHTML = svgTxt;
-  svgRoot = host.querySelector('svg');
-  if (!svgRoot) throw new Error('[board] initBoard: SVG failed to load');
+async function postInitAfterSVG({ mapUrl = DEFAULT_MAP_URL } = {}) {
+  if (!svgRoot) throw new Error('[board] postInitAfterSVG: no svgRoot');
 
   // OPTIONAL: apply semantic/umbrella classes for theming (src/groups.js)
   try {
@@ -220,10 +152,10 @@ export async function initBoard({ hostId, svgUrl = DEFAULT_SVG_URL, mapUrl = DEF
   const local   = loadLocalMappings();
   unifiedMap    = mergeMaps(fileMapCache, local);
 
-  // Auto-calibrate slider bounds from rails (CH1–CH4, tempos, xfader)
+  // Auto-calibrate slider bounds from rails
   autoCalibrateSliders();
 
-  // Listen for "wizard saved mapping" → re-merge instantly (no reload needed)
+  // Listen for "wizard saved mapping" → re-merge instantly
   if (typeof window !== 'undefined' && !window.__FLX_REMERGE_BIND__) {
     window.__FLX_REMERGE_BIND__ = true;
     window.addEventListener('flx:map-updated', () => {
@@ -234,6 +166,114 @@ export async function initBoard({ hostId, svgUrl = DEFAULT_SVG_URL, mapUrl = DEF
       } catch {}
     });
   }
+}
+
+/* -------------------------
+   Init (legacy path that DOES fetch)
+   Kept for compatibility. Prefer mountBoard().
+--------------------------*/
+export async function initBoard({ hostId, svgUrl = DEFAULT_SVG_URL, mapUrl = DEFAULT_MAP_URL } = {}) {
+  const host = document.getElementById(hostId);
+  if (!host) throw new Error(`Board host #${hostId} not found`);
+
+  // Load SVG fresh (legacy behavior)
+  const svgTxt = await (await fetch(svgUrl, { cache: 'no-store' })).text();
+  host.innerHTML = svgTxt;
+  svgRoot = host.querySelector('svg');
+  if (!svgRoot) throw new Error('[board] initBoard: SVG failed to load');
+
+  await postInitAfterSVG({ mapUrl });
+}
+
+/* -------------------------
+   mountBoard (NEW, single source of truth)
+   - Strictly one fetch (plain or cache-busted)
+   - Singleton: refuses to run twice
+   - Cleans legacy embeds inside the mount
+--------------------------*/
+export async function mountBoard({
+  containerId = 'board',
+  url         = DEFAULT_SVG_URL,
+  cacheBust   = true,
+  scopeOps    = true,
+  zIndex      = 10,
+  mapUrl      = DEFAULT_MAP_URL,
+} = {}) {
+  if (__mounted)  return __mounted;
+  if (__mounting) return __mounting;
+
+  __mounting = (async () => {
+    // 1) Resolve the container strictly as a DIV to avoid collisions with SVG's internal id="board"
+    const mount = document.querySelector(`div#${CSS.escape(containerId)}`);
+    if (!mount) throw new Error(`[board] mount container <div id="${containerId}"> not found`);
+
+    // 2) Remove legacy embeds living inside the mount (no-ops if none)
+    mount.querySelectorAll('img[src$="board.svg"], object[data$="board.svg"], embed[src$="board.svg"]').forEach(el => el.remove());
+    // Remove stray inline <svg> children previously injected by other code
+    [...mount.children].forEach(el => { if (el.tagName === 'SVG') el.remove(); });
+
+    // 3) Choose single URL and fetch ONCE (plain vs cachebusted)
+    const fetchURL = _appendCacheBust(url, cacheBust);
+    const r = await fetch(fetchURL, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`[board] fetch failed ${r.status} ${r.statusText}`);
+    const svgText = await r.text();
+
+    // 4) Insert SVG as the ONLY direct child
+    mount.innerHTML = svgText;
+
+    // 5) Foreground stacking & interactivity
+    try {
+      if (!mount.style.position) mount.style.position = 'relative';
+      mount.style.zIndex = String(zIndex);
+    } catch {}
+    const svg = mount.querySelector(':scope > svg');
+    if (!svg) throw new Error('[board] injected SVG not found at :scope > svg');
+
+    svg.style.display = 'block';
+    svg.style.pointerEvents = 'auto';
+    svg.style.userSelect = 'none';
+
+    svgRoot = svg;
+
+    // Optional: expose ops lookup scope for other modules (themes/ops.js)
+    if (scopeOps && typeof window !== 'undefined') {
+      window.__OPS_ROOT = svg;
+    }
+
+    // 6) Defensive: keep exactly one <svg> direct child in the mount
+    const obs = new MutationObserver(() => {
+      const svgs = mount.querySelectorAll(':scope > svg');
+      if (svgs.length > 1) {
+        // Keep the LAST one (foreground in normal flow)
+        [...svgs].slice(0, -1).forEach(el => el.remove());
+      }
+    });
+    obs.observe(mount, { childList: true });
+
+    // 7) Run the rest of the board init without re-fetching SVG
+    await postInitAfterSVG({ mapUrl });
+
+    // 8) Build and cache public API
+    const api = {
+      mount,
+      svg,
+      url: fetchURL,
+      query:   (sel) => svg.querySelector(sel),
+      queryAll:(sel) => svg.querySelectorAll(sel),
+      byId:    (id)  => getElByAnyIdIn(svg, id),
+      bbox:    ()    => svg.getBBox(),
+      size:    ()    => {
+        const vb = svg.viewBox?.baseVal;
+        const width  = (vb && vb.width)  || svg.width?.baseVal?.value  || mount.clientWidth  || 0;
+        const height = (vb && vb.height) || svg.height?.baseVal?.value || mount.clientHeight || 0;
+        return { width, height };
+      }
+    };
+    __mounted = api;
+    return api;
+  })();
+
+  return __mounting;
 }
 
 /* -------------------------
@@ -396,14 +436,11 @@ function getRotateCenter(target, { cx=null, cy=null } = {}){
 // SAFE: CSS-only rotation so we don't overwrite existing translate(...) from the SVG.
 // Optional attribute fallback if you add data-use-attr-rotate on the element.
 function applyRotation(target, angleDeg){
-  // Preferred: CSS transform (keeps original placement)
   try {
     target.style.transformBox = 'fill-box';
     target.style.transformOrigin = 'center';
     target.style.transform = `rotate(${angleDeg}deg)`;
   } catch {}
-
-  // Opt-in fallback that composes with original transform attribute
   if (target.hasAttribute('data-use-attr-rotate')) {
     if (!target.__origTransform) {
       target.__origTransform = target.getAttribute('transform') || '';
@@ -420,13 +457,12 @@ function animateContinuous(el, entry, value){
   lastCCValue[entry.target] = value;
   const id = (entry.target || '').toLowerCase();
 
-  // PATCH 2: make selector regexes case-insensitive to match IDs consistently.
+  // Case-insensitive selectors for robustness
   const isVertSlider = /^slider_ch[1-4]$/i.test(id) || /^slider_tempo_(l|r)$/i.test(id);
   const isXfader     = /^(xfader(_slider)?|crossfader)$/i.test(id);
 
   // Vertical sliders/faders (BOTTOM = 0, TOP = 127)
   if (isVertSlider && el.hasAttribute('y')) {
-    // If data-minY/maxY not present (rare), try calibrate now
     if (!el.hasAttribute('data-minY') || !el.hasAttribute('data-maxY')) {
       autoCalibrateSliders();
     }
@@ -452,7 +488,7 @@ function animateContinuous(el, entry, value){
     return;
   }
 
-  // Jog wheels: rotate platter/pointer (relative by default)
+  // Jog wheels
   if (/^jog_/.test(id)) {
     const { degPerStep, mode, rotateTarget } = getJogConfig(el, entry);
 
@@ -491,7 +527,6 @@ function animateContinuous(el, entry, value){
 
     let angle;
     if (mode === 'accum') {
-      // Accumulated spin (for endless encoders if you ever use them)
       const prev = (lastCCValue[entry.target + ':knob'] ?? v);
       const step = v - prev;
       const clamped = Math.max(-16, Math.min(16, step));
@@ -500,11 +535,9 @@ function animateContinuous(el, entry, value){
       angle = knobAccumAngle[entry.target] + angleOffset;
       lastCCValue[entry.target + ':knob'] = v;
     } else {
-      // Absolute: map 0..127 to −135..+135 for EQ/trim/filter, 0..360 for others
       angle = angleMin + (span * (v / 127)) + angleOffset;
     }
 
-    // Do NOT normalize to 0..360; keeping raw −135..+135 avoids flips over 6 o'clock
     applyRotation(target, angle);
     el.classList.add('lit');
     return;
@@ -563,6 +596,7 @@ function listSliderBounds(){
   });
   const xf = getElByAnyId('xfader_slider') || getElByAnyId('xfader') || getElByAnyId('crossfader');
   if (xf) out.push({ id: xf.id, minX:+xf.getAttribute('data-minX')||null, maxX:+xf.getAttribute('data-maxX')||null });
+  // eslint-disable-next-line no-console
   console.table(out);
   return out;
 }
@@ -579,7 +613,6 @@ if (typeof window !== 'undefined') {
 /* -------------------------
    Remote map merge (NEW)
 --------------------------*/
-// Receive a remote map and merge with the shipped map
 if (typeof window !== 'undefined' && !window.__FLX_REMOTE_MAP_BIND__) {
   window.__FLX_REMOTE_MAP_BIND__ = true;
   window.addEventListener('flx:remote-map', (ev) => {
@@ -597,12 +630,9 @@ if (typeof window !== 'undefined' && !window.__FLX_REMOTE_MAP_BIND__) {
 /* -------------------------
    Public API
 --------------------------*/
-// Optional: export map for debugging
 export function getUnifiedMap() {
   return unifiedMap.slice();
 }
-
-// Allow a manual re-merge from the console if needed
 export function remergeLearned() {
   unifiedMap = mergeMaps(fileMapCache, loadLocalMappings());
   // eslint-disable-next-line no-console
