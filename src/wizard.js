@@ -13,6 +13,7 @@
 //   - midi.js calls window.FLX_LEARN_HOOK(info) (we listen to capture MIDI)
 
 import { getUnifiedMap } from './board.js';
+import { FEEL_SERVICE } from '/src/engine/feel-service.js'; // [SOP ADDED]
 
 // ------------------------------
 // Local storage for learned map
@@ -289,6 +290,68 @@ function renderList(svg, mount) {
   return list;
 }
 
+// [SOP ADDED] ——— Feel panel (drop-in, no framework)
+function mountFeelControls(parent) {
+  try {
+    if (parent.querySelector('#feel-wizard')) return; // idempotent
+    const sec = document.createElement('section');
+    sec.id = 'feel-wizard';
+    sec.innerHTML = `
+      <hr style="margin:10px 0; opacity:.3;">
+      <div class="wiz-title">Feel / Sensitivity</div>
+      <div class="wiz-row"><label>Jog scale <input id="jogScale" type="number" step="0.0001" style="width:100px"></label></div>
+      <div class="wiz-row"><label>Jog alpha <input id="jogAlpha" type="number" step="0.001" style="width:100px"></label></div>
+      <div class="wiz-row"><label>Jog beta  <input id="jogBeta"  type="number" step="0.0001" style="width:100px"></label></div>
+      <div class="wiz-row"><label>Filter step  <input id="filterStep"  type="number" step="0.001" style="width:100px"></label></div>
+      <div class="wiz-row"><label>Filter accel <input id="filterAccel" type="number" step="0.1"   style="width:100px"></label></div>
+      <div class="wiz-row"><label>Soft-takeover window <input id="softWindow" type="number" step="0.01" min="0" max="0.49" style="width:100px"></label></div>
+      <div class="wiz-row"><button id="downloadFeel">Download device feel JSON</button></div>
+    `;
+    parent.appendChild(sec);
+
+    const refs = {
+      jogScale:   sec.querySelector('#jogScale'),
+      jogAlpha:   sec.querySelector('#jogAlpha'),
+      jogBeta:    sec.querySelector('#jogBeta'),
+      filterStep: sec.querySelector('#filterStep'),
+      filterAccel:sec.querySelector('#filterAccel'),
+      softWindow: sec.querySelector('#softWindow'),
+      download:   sec.querySelector('#downloadFeel'),
+    };
+
+    const refreshUI = (c) => {
+      if (!c) return;
+      refs.jogScale.value    = c.global?.jog?.scale ?? 0.004;
+      refs.jogAlpha.value    = c.global?.jog?.alpha ?? 0.125;
+      refs.jogBeta.value     = c.global?.jog?.beta  ?? 0.0039;
+      refs.filterStep.value  = c.controls?.filter?.step ?? 0.015;
+      refs.filterAccel.value = c.controls?.filter?.accel ?? 0;
+      refs.softWindow.value  = c.global?.softTakeoverWindow ?? 0.04;
+    };
+
+    // Initial + subscribe
+    const initCfg = FEEL_SERVICE.get?.();
+    if (initCfg) refreshUI(initCfg);
+    FEEL_SERVICE.onChange(refreshUI);
+
+    // Live updates → runtime
+    refs.jogScale.addEventListener('input',  e => FEEL_SERVICE.update('global.jog.scale',               parseFloat(e.target.value)));
+    refs.jogAlpha.addEventListener('input',  e => FEEL_SERVICE.update('global.jog.alpha',               parseFloat(e.target.value)));
+    refs.jogBeta.addEventListener('input',   e => FEEL_SERVICE.update('global.jog.beta',                parseFloat(e.target.value)));
+    refs.filterStep.addEventListener('input',e => FEEL_SERVICE.update('controls.filter.step',           parseFloat(e.target.value)));
+    refs.filterAccel.addEventListener('input',e=> FEEL_SERVICE.update('controls.filter.accel',          parseFloat(e.target.value)));
+    refs.softWindow.addEventListener('input',e => FEEL_SERVICE.update('global.softTakeoverWindow',      parseFloat(e.target.value)));
+
+    refs.download.addEventListener('click', () => {
+      const device = (FEEL_SERVICE.get()?.device || 'device')
+        .toLowerCase().replace(/\s+/g,'-');
+      FEEL_SERVICE.download(`${device}-feel.json`);
+    });
+  } catch (e) {
+    console.warn('[Wizard] feel controls mount failed', e);
+  }
+}
+
 function buildPanel(svg) {
   ensureStyles();
   if (PANEL) return PANEL;
@@ -527,6 +590,9 @@ function buildPanel(svg) {
     toast(`Linked ${keys.length} keys to ${FAMILY_TARGET}`);
     resetFamilyCapture();
   });
+
+  // [SOP ADDED] mount feel controls inside wizard panel
+  mountFeelControls(wrap);
 
   PANEL = wrap;
   updateCurrentLabel();
