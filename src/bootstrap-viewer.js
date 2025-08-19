@@ -58,7 +58,7 @@ import { createOpsRecorder } from '/src/engine/recorder.js';
     display: 'grid',
     placeItems: 'center',
     background: 'transparent',
-    zIndex: '5'
+    zIndex: '5' // keep under any HUD you render later
   });
   wrap.dataset.fit = 'contain'; // 'contain' | 'cover'
   root.appendChild(wrap);
