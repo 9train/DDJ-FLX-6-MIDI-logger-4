@@ -526,3 +526,24 @@ export function remergeLearned() {
   console.log('[Board] Remerged (manual):', unifiedMap.length);
   return getUnifiedMap();
 }
+
+/* -------------------------
+   Option A: Named export mountBoard (wrapper)
+   - Preferred import:   import { mountBoard } from '/src/board.js';
+   - Back-compat:        default export remains the function.
+--------------------------*/
+export function mountBoard({
+  containerId = 'board',
+  url        = DEFAULT_SVG_URL,
+  mapUrl     = DEFAULT_MAP_URL,
+} = {}) {
+  // Delegate to existing init logic; zero behavior change.
+  return initBoard({ hostId: containerId, svgUrl: url, mapUrl });
+}
+
+// Named exports per SOP
+export { mountBoard as MountBoard }; // (alias optional; safe to remove)
+export { getUnifiedMap };
+
+// Optional legacy default export: keep default for older imports
+export default mountBoard;
