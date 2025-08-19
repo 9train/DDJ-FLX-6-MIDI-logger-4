@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>FLX6 Visualizer — Host</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="./styles.css" />
+  <!-- Optional: silence missing favicon 404 -->
+  <link rel="icon" href="data:,">
+
+  <!-- Existing env override (kept) -->
+  <script>
+    window.WS_URL = "wss://ws.setsoutofcontext.com";
+  </script>
+
+  <!-- SOP ADD: Force the correct secure WS endpoint for all devices/browsers (kept) -->
+  <script>
+    // If you want to change environments, update this single line:
+    // e.g., "wss://ws.setsoutofcontext.com"
+    window.WS_URL = "wss://ws.setsoutofcontext.com";
+  </script>
+</head>
+<body class="host">
+  <!-- Full host toolbar -->
+  <div id="ui">
+    <div class="left" style="display:flex;gap:8px;align-items:center;">
+      <button id="fit" title="Fit SVG inside window">Fit</button>
+      <button id="fill" title="Fill the frame (good for OBS)">Fill</button>
+      <button id="toggleBG" title="Toggle transparent background">Toggle BG</button>
+    </div>
+    <div class="right" style="display:flex;gap:10px;align-items:center;">
+      <span id="wsStatus">WS: ⏳</span>
+      <span id="midiStatus">MIDI: ⏳</span>
+
+      <!-- Full recorder -->
+      <button id="recStart" title="Start recording incoming MIDI">Rec</button>
+      <button id="recStop"  title="Stop recording">Stop</button>
+      <button id="recPlay"  title="Play last recording">Play</button>
+      <button id="recSave"  title="Download as JSON">Save</button>
+      <label id="recLoadWrap" style="display:inline-flex;align-items:center;gap:6px;">
+        Load
+        <input id="recLoad" type="file" accept="application/json" style="width:150px;" />
+      </label>
+    </div>
+  </div>
+
+  <section id="boardHost" aria-label="Controller visual"></section>
+
+  <!-- Keep existing fallback default; it won't override the forced value above -->
+  <script>
+    window.WS_URL = window.WS_URL || "wss://ws.setsoutofcontext.com";
+  </script>
+
+  <script type="module">
+    /****************************************************************
+     * Core imports (host)
+     ****************************************************************/
+    import { initBoard, consumeInfo as boardConsume, getUnifiedMap } from '/src/board.js';
+    import { connectWS }   from '/src/ws.js';
+    import * as THEME      from '/src/theme.js';
+    import { initWebMIDI, bootMIDIFromQuery } from '/src/midi.js'; /* SOP: added bootMIDIFromQuery earlier */
+    import { recorder as FLXRec } from '/src/recorder.js';
+    import * as RECUI   from '/src/recorder_ui.js';
+    import * as DIAG    from '/src/diag.js';
+    import * as PRESETS from '/src/presets.js';
+    import * as EDIT    from '/src/editmode.js';
+    import * as WIZ     from '/src/wizard.js';
+    import { initLauncher } from '/src/launcher.js';
+    import { loadMappings } from '/src/mapper.js';
+    import { getWSURL } from '/src/roles.js';  // SOP add
+
+    /****************************************************************
+     * Force host role + WS URL resolution
+     * SOP tweak: if window.WS_URL is set (forced), DO NOT let roles.js override it.
+     ****************************************************************/
+    let role = 'host';
+    let wsURL = window.WS_URL;
+
+    try {
+      const mod = await import('/src/roles.js');
+      // Only use roles.js if a forced WS_URL was NOT provided
+      if (!wsURL && mod?.getWSURL) wsURL = mod.getWSURL();
+    } catch {
+      const qs = new URLSearchParams(location.search);
+      if (!wsURL) {
+        const host = location.hostname || 'localhost';
+        wsURL = qs.get('ws') || `ws://${host}:` + (qs.get('wsport') || '8787');
+      }
+    }
+
+    document.body.classList.add(role);
+    document.body.dataset.role = role;
+    window.FLX_ROLE = role;
+
+    /****************************************************************
+     * Init: board + Theme (Shift+T toggles Theme)
+     ****************************************************************/
+    await initBoard({ hostId: 'boardHost' });
+    THEME.attachThemeDesigner({ svgRoot: document.querySelector('#boardHost svg') });
+
+    /****************************************************************
+     * Unified consumer (render into board)
+     ****************************************************************/
+    const baseConsume = (info) => boardConsume(info);
+    window.consumeInfo = baseConsume;
+
+    /****************************************************************
+    * Status helpers
+    ****************************************************************/
+    const wsStatusEl   = document.getElementById('wsStatus');
+    const midiStatusEl = document.getElementById('midiStatus');
+    const setWSStatus   = (s) => { if (wsStatusEl)   wsStatusEl.textContent   = 'WS: '   + s; };
+    const setMIDIStatus = (s) => { if (midiStatusEl) midiStatusEl.textContent = 'MIDI: ' + s; };
+    // Expose for snippet callbacks
+    window.setWSStatus = setWSStatus;
+    window.setMIDIStatus = setMIDIStatus;
+
+    /****************************************************************
+     * SOP MERGE: MIDI shape normalizer + single forwarding wrapper
+     * - Normalizes any {type:'midi_like'|'midi'|'info', payload:{...}}
+     * - Harmonizes CC and Note events to d1/d2 + controller/value
+     * - Sends normalized object over WS, then forwards to original consumer
+     ****************************************************************/
+    function normalizeInfo(x) {
+      if (!x || typeof x !== 'object') return x;
+
+      // Unwrap wrapper types
+      if (x.type && typeof x.payload === 'object') {
+        const t = String(x.type).toLowerCase();
+        if (t === 'midi_like' || t === 'midi' || t === 'info') {
+          x = x.payload;
+        }
+      }
+
+      const info = { ...x };
+      const t = String(info.type || '').toLowerCase();
+
+      // CC: accept controller/value or d1/d2, mirror both
+      if (t === 'cc') {
+        const d1 = info.d1 ?? info.controller ?? 0;
+        const d2 = info.d2 ?? info.value ?? 0;
+        info.controller = d1;
+        info.value = d2;
+        info.d1 = d1;
+        info.d2 = d2;
+        info.type = 'cc';
+        return info;
+      }
+
+      // Notes: ensure d1/d2 exist
+      if (t === 'noteon' || t === 'noteoff') {
+        info.d1 = info.d1 ?? info.code ?? 0;
+        info.d2 = info.d2 ?? info.value ?? 0;
+        return info;
+      }
+
+      // Generic 'midi' envelope with mtype
+      if (t === 'midi') {
+        const mt = String(info.mtype || '').toLowerCase();
+        if (mt === 'cc') {
+          info.type = 'cc';
+          const d1 = info.d1 ?? info.controller ?? info.code ?? 0;
+          const d2 = info.d2 ?? info.value ?? 0;
+          info.controller = d1; info.value = d2; info.d1 = d1; info.d2 = d2;
+          return info;
+        }
+        if (mt === 'noteon' || mt === 'noteoff') {
+          info.type = mt;
+          info.d1 = info.d1 ?? info.code ?? 0;
+          info.d2 = info.d2 ?? info.value ?? 0;
+          return info;
+        }
+      }
+
+      // Unknown types fall through unchanged
+      return info;
+    }
+
+    // Replace the original forwarder with a normalized forwarder
+    const origConsume = window.consumeInfo; // keep original rendering consumer
+    window.consumeInfo = (info) => {
+      const n = normalizeInfo(info);
+      if (window.wsClient?.isAlive?.()) window.wsClient.send(n);
+      return origConsume(n);
+    };
+
+    /****************************************************************
+     * Auto-push learned map to the room (SOP)
+     ****************************************************************/
+    function pushMap() {
+      try {
+        const mapArray = loadMappings() || [];
+        if (window.wsClient?.sendMap) {
+          window.wsClient.sendMap(mapArray);
+        } else {
+          window.wsClient?.send?.({ type: 'map:set', map: mapArray, ts: Date.now() });
+        }
+      } catch (e) {
+        console.warn('[host] pushMap failed', e);
+      }
+    }
+    setTimeout(pushMap, 250);
+    window.addEventListener('flx:map-updated', pushMap);
+
+    /****************************************************************
+     * WebMIDI capture (host only)
+     ****************************************************************/
+    try {
+      console.log('[MIDI] starting init via bootMIDIFromQuery');
+      const handle = await bootMIDIFromQuery({
+        onInfo: function(info){ try { window.consumeInfo && window.consumeInfo(info); } catch {} },
+        onStatus: function(s){ try { setMIDIStatus && setMIDIStatus(s); } catch {} }
+      });
+      console.log('[MIDI] init OK');
+    } catch (e) {
+      console.warn('[MIDI] init failed', e);
+      setMIDIStatus('host: off');
+    }
+
+    /****************************************************************
+     * Recorder (full)
+     ****************************************************************/
+    const $ = (id) => document.getElementById(id);
+    $('recStart')?.addEventListener('click', () => { FLXRec.start(); setTimeout(()=>RECUI.refresh(), 50); });
+    $('recStop') ?.addEventListener('click', () => { FLXRec.stop();  RECUI.refresh(); });
+    $('recPlay') ?.addEventListener('click', () => FLXRec.play({ speed: 1.0, loop: false }));
+    $('recSave') ?.addEventListener('click', () => FLXRec.download('take.json'));
+    $('recLoad') ?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0]; if (!file) return;
+      const text = await file.text();
+      await FLXRec.loadFromText(text);
+      RECUI.refresh();
+    });
+
+    /****************************************************************
+     * Launcher (menus + panels)
+     ****************************************************************/
+    const stageEl = document.getElementById('boardHost');  /* single declaration */
+    initLauncher({
+      actions: {
+        // Panels
+        toggleDiag:     () => DIAG.toggle(),
+        toggleTimeline: () => RECUI.toggle(),
+        toggleWizard:   () => WIZ.toggle(),
+        toggleEdit:     () => EDIT.toggle(),
+        // Theme + view
+        toggleTheme: () => THEME.toggle(),
+        fit:        () => stageEl.classList.remove('fill'),
+        fill:       () => stageEl.classList.add('fill'),
+        toggleBG:   () => document.body.classList.toggle('transparent'),
+        // Recorder
+        recStart:  () => { FLXRec.start(); setTimeout(()=>RECUI.refresh(), 50); },
+        recStop:   () => { FLXRec.stop();  RECUI.refresh(); },
+        recPlay:   () =>  FLXRec.play({ speed: 1.0, loop: false }),
+        recSave:   () =>  FLXRec.download('take.json'),
+        recLoadText: async (text) => { await FLXRec.loadFromText(text); RECUI.refresh(); },
+      },
+      mountPresetUI: (el) => PRESETS.attachPresetUI(el),
+    });
+
+    /****************************************************************
+     * Jog Physics (“Tape Mode”)
+     * (unchanged; will see normalized events because of wrapper above)
+     ****************************************************************/
+    const Jog = (() => {
+      const CFG = { mode:'off', sensitivity:2.5, damping:0.92 };
+      const S   = {
+        L:{ angle:0, vel:0, lastVal:null, lastKey:null, el:null },
+        R:{ angle:0, vel:0, lastVal:null, lastKey:null, el:null },
+        anim:null
+      };
+      function toIdVariants(id){ const v=String(id||''); const a=new Set([v]); if (v.includes('_x5F_')) a.add(v.replace(/_x5F_/g,'_')); if (v.includes('_')) a.add(v.replace(/_/g,'_x5F_')); return [...a]; }
+      function getEl(id){ for (const vid of toIdVariants(id)) { const el = document.getElementById(vid); if (el) return el; } return null; }
+      function resolveJogEls(){ S.L.el=getEl('jog_L'); S.R.el=getEl('jog_R'); }
+      resolveJogEls();
+      function applyRotation(el, ang){ if (!el) return; try { el.style.transformBox='fill-box'; el.style.transformOrigin='center'; el.style.transform=`rotate(${ang}deg)`; } catch {} try { const bb=el.getBBox(); const cx=bb.x+bb.width/2, cy=bb.y+bb.height/2; el.setAttribute('transform',`rotate(${ang} ${cx} ${cy})`); } catch {} }
+      function tick(){ S.anim=requestAnimationFrame(tick); if (CFG.mode!=='tape') return; ['L','R'].forEach(side=>{ const j=S[side]; if (!j.el) return; j.angle+=j.vel; j.vel*=CFG.damping; if (Math.abs(j.vel)<0.001) j.vel=0; applyRotation(j.el,j.angle); }); }
+      if (!window.__JOG_WRAP__) { window.__JOG_WRAP__=true; const orig=window.consumeInfo; window.consumeInfo=(info)=>{ try { onEvent(info); } catch {} return orig(info); }; }
+      function onEvent(info){
+        if (CFG.mode==='off') return;
+        const mm=getUnifiedMap?.()||[];
+        const type=(info.type||'').toLowerCase();
+        const code=type==='cc'?(info.controller??info.d1):info.d1;
+        const key=`${type}:${info.ch}:${code}`;
+        const hits=mm.filter(m=>(m.key&&m.key===key&&m.target)||(!m.key&&m.type===type&&m.ch===info.ch&&m.code===(info.controller??info.d1)&&m.target));
+        let side=null;
+        if (hits.some(h=>(h.target||'').toLowerCase().includes('jog_l'))) side='L';
+        if (hits.some(h=>(h.target||'').toLowerCase().includes('jog_r'))) side=side||'R';
+        if (!side) return;
+        const j=S[side]; if (!j.el) resolveJogEls();
+
+        if (CFG.mode==='absolute'){
+          const angle=(info.value??info.d2??0)*(360/127);
+          j.angle=angle; applyRotation(j.el,j.angle); return;
+        }
+
+        if (CFG.mode==='tape'){
+          const v=(info.value??info.d2??0)|0;
+          if (j.lastKey!==key) j.lastVal=null;
+          let d;
+          if (j.lastVal==null) d=0;
+          else { d=v-j.lastVal; if (d>64) d-=128; if (d<-64) d+=128; }
+          j.lastVal=v; j.lastKey=key;
+          j.vel+=d*2.5;
+          if (!S.anim) tick();
+        }
+      }
+      return { };
+    })();
+
+    /****************************************************************
+     * Toolbar + Hotkeys
+     ****************************************************************/
+    // Reuse the same stageEl (do NOT redeclare)
+    document.getElementById('fit')     ?.addEventListener('click',  () => stageEl.classList.remove('fill'));
+    document.getElementById('fill')    ?.addEventListener('click',  () => stageEl.classList.add('fill'));
+    document.getElementById('toggleBG')?.addEventListener('click',  () => document.body.classList.toggle('transparent'));
+
+    document.addEventListener('keydown', (e)=>{
+      if (e.shiftKey && e.key.toLowerCase()==='t') THEME.toggle();
+    });
+  </script>
+
+  <!-- ===== SOP: WebSocket (host) replacement switched to external bootstrap ===== -->
+  <script type="module" src="/src/bootstrap-host.js"></script>
+
+  <!-- One-shot probe AFTER wsClient exists (reference via window.wsClient) -->
+  <script>
+    (function () {
+      const id = Math.random().toString(36).slice(2, 9);
+      try { window.wsClient?.send?.({ type: 'probe', id }); } catch {}
+      console.log('[probe] sent', id);
+    })();
+  </script>
+</body>
+</html>
